@@ -1,0 +1,3 @@
+https://github.com/ACAT-SCUT/Awesome-CloudComputing-Datasets?tab=readme-ov-file
+https://github.com/google/cluster-data
+https://github.com/Azure/AzurePublicDataset
