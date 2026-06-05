@@ -1,3 +1,22 @@
-data
-models
+# Ignore all data files (download via download_data.sh)
+data/
+
+# Ignore all model weight/metric files ...
+models/saved/*.pt
+models/saved/*_history.json
+models/saved/*_metrics.json
+models/saved/*_manifest.json
+
+# ... except the best trained models
+# Best model: GRU on GenTD26 (R2=0.587)
+!models/saved/GRU_genai_w24_20260521_104305_weights.pt
+!models/saved/GRU_genai_w24_20260521_104305_manifest.json
+!models/saved/GRU_genai_w24_20260521_104305_metrics.json
+!models/saved/GRU_genai_w24_20260521_104305_history.json
+
+# Best model: Transformer on GPU v2020 (R2=0.976)
+!models/saved/Transformer_gpu_v2020_w24_20260414_102522_weights.pt
+!models/saved/Transformer_gpu_v2020_w24_20260414_102522_manifest.json
+!models/saved/Transformer_gpu_v2020_w24_20260414_102522_metrics.json
+!models/saved/Transformer_gpu_v2020_w24_20260414_102522_history.json
 __pycache__
