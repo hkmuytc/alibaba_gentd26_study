@@ -99,3 +99,25 @@ def get_model(name, input_dim, **kwargs):
     if name not in MODEL_REGISTRY:
         raise ValueError(f"Unknown model: {name}. Choose from {list(MODEL_REGISTRY.keys())}")
     return MODEL_REGISTRY[name](input_dim=input_dim, **kwargs)
+
+
+def build_model_kwargs(model_name: str, hidden_dim: int, num_layers: int, dropout: float) -> dict:
+    """Return architecture-specific constructor kwargs for the given model.
+
+    Centralises the mapping from shared hyperparameters (hidden_dim, num_layers,
+    dropout) to the parameter names expected by each architecture so callers
+    do not need to branch on model names themselves.
+    """
+    if model_name == "Transformer":
+        return {
+            "d_model": hidden_dim,
+            "nhead": min(4, hidden_dim),
+            "num_layers": num_layers,
+            "dropout": dropout,
+            "dim_feedforward": hidden_dim * 2,
+        }
+    return {
+        "hidden_dim": hidden_dim,
+        "num_layers": num_layers,
+        "dropout": dropout,
+    }

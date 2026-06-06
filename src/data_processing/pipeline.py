@@ -351,6 +351,194 @@ def add_rate_of_change(df, target_col="power_total_kw"):
     return df
 
 
+def aggregate_genai_sources(freq_seconds: int = 300) -> tuple:
+    """Load all GenAI raw sources and merge them into a cluster-level time-binned DataFrame.
+
+    Returns
+    -------
+    agg_df : pd.DataFrame
+        Merged cluster-level DataFrame with columns:
+        timestamp, gpu_util, gpu_mem_bytes, mem_util, qps.
+    meta : dict
+        Aggregation metadata: n_records, n_containers, n_bins.
+    """
+    gpu = load_genai_gpu_duty_cycle()
+    gmem = load_genai_gpu_memory()
+    pmem = load_genai_pod_memory()
+    qps_raw = load_genai_qps()
+    anchor_time = shared_time_anchor(gpu, gmem, pmem, qps_raw)
+
+    gpu_agg = aggregate_to_cluster_level(
+        gpu, value_cols=["gpu_util"], freq_seconds=freq_seconds, anchor_time=anchor_time,
+    )
+    gmem_agg = aggregate_to_cluster_level(
+        gmem, value_cols=["gpu_mem_bytes"], freq_seconds=freq_seconds, anchor_time=anchor_time,
+    )
+    pmem_agg = aggregate_to_cluster_level(
+        pmem, value_cols=["mem_util"], freq_seconds=freq_seconds, anchor_time=anchor_time,
+    )
+    qps_agg = aggregate_to_cluster_level(
+        qps_raw, value_cols=["qps"], freq_seconds=freq_seconds, agg_func="sum", anchor_time=anchor_time,
+    )
+
+    agg_df = gpu_agg
+    for other in [gmem_agg, pmem_agg, qps_agg]:
+        agg_df = pd.merge(agg_df, other, on="timestamp", how="outer")
+    agg_df = agg_df.sort_values("timestamp").ffill().bfill().reset_index(drop=True)
+
+    meta = {
+        "n_records": len(gpu),
+        "n_containers": gpu["container_id"].nunique(),
+        "n_bins": len(agg_df),
+    }
+    return agg_df, meta
+
+
+def aggregate_v2020_sources(freq_seconds: int = 300, value_cols=None) -> tuple:
+    """Load GPU v2020 machine metrics and aggregate to cluster-level time bins.
+
+    Returns
+    -------
+    agg_df : pd.DataFrame
+        Time-binned cluster averages for the specified value columns.
+    meta : dict
+        Aggregation metadata: n_records, n_machines, n_bins.
+    """
+    if value_cols is None:
+        value_cols = [
+            "machine_cpu", "machine_gpu", "machine_cpu_usr",
+            "machine_cpu_kernel", "machine_cpu_iowait", "machine_load_1",
+        ]
+    raw = load_gpu_v2020_machine_metrics()
+    agg_df = spread_v2020_to_time_bins(raw, freq_seconds=freq_seconds, value_cols=value_cols)
+    meta = {
+        "n_records": len(raw),
+        "n_machines": raw["machine"].nunique(),
+        "n_bins": len(agg_df),
+    }
+    return agg_df, meta
+
+
+def estimate_cluster_power(
+    agg_df,
+    dataset: str,
+    n_units: int,
+    gpu_idle: float = GPU_P_IDLE,
+    gpu_max: float = GPU_P_MAX,
+    cpu_idle: float = CPU_P_IDLE,
+    cpu_max: float = CPU_P_MAX,
+    mem_idle: float = MEM_P_IDLE,
+    mem_max: float = MEM_P_MAX,
+):
+    """Estimate cluster power consumption using the Fan et al. linear power model.
+
+    Supports two dataset schemas:
+      - ``"genai"``: uses ``gpu_util`` and ``mem_util`` columns.
+      - ``"gpu_v2020"``: uses ``machine_cpu`` and ``machine_gpu`` columns.
+
+    Parameters
+    ----------
+    agg_df : pd.DataFrame
+        Cluster-level aggregated utilisation DataFrame.
+    dataset : str
+        Dataset identifier, one of ``"genai"`` or ``"gpu_v2020"``.
+    n_units : int
+        Number of GPUs (genai) or machines (gpu_v2020) in the cluster.
+    gpu_idle, gpu_max : float
+        Idle and max GPU power per unit (watts).
+    cpu_idle, cpu_max : float
+        Idle and max CPU power per unit (watts). Only used for ``"gpu_v2020"``.
+    mem_idle, mem_max : float
+        Idle and max memory power per unit (watts). Only used for ``"genai"``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of *agg_df* with added power columns including ``power_total_kw``.
+    """
+    power_df = agg_df.copy()
+
+    if dataset == "genai":
+        gpu_col = "gpu_util"
+        power_df["gpu_util_frac"] = (
+            power_df[gpu_col] / 100.0 if power_df[gpu_col].max() > 1.0 else power_df[gpu_col]
+        )
+        power_df["mem_util_frac"] = (
+            power_df["mem_util"] / 100.0 if power_df["mem_util"].max() > 1.0 else power_df["mem_util"]
+        )
+        u_gpu = np.clip(power_df["gpu_util_frac"].values, 0, 1)
+        u_mem = np.clip(power_df["mem_util_frac"].values, 0, 1)
+        power_df["power_gpu_kw"] = n_units * (gpu_idle + (gpu_max - gpu_idle) * u_gpu) / 1000.0
+        power_df["power_mem_kw"] = n_units * (mem_idle + (mem_max - mem_idle) * u_mem) / 1000.0
+        power_df["power_total_kw"] = power_df["power_gpu_kw"] + power_df["power_mem_kw"]
+        gpu_mem_max = power_df["gpu_mem_bytes"].max()
+        power_df["gpu_mem_util"] = power_df["gpu_mem_bytes"] / gpu_mem_max if gpu_mem_max > 0 else 0.0
+
+    elif dataset == "gpu_v2020":
+        power_df["cpu_util_frac"] = power_df["machine_cpu"].clip(0, 100) / 100.0
+        power_df["gpu_util_frac"] = power_df["machine_gpu"].clip(0, 100) / 100.0
+        u_cpu = np.clip(power_df["cpu_util_frac"].values, 0, 1)
+        u_gpu = np.clip(power_df["gpu_util_frac"].values, 0, 1)
+        power_df["power_cpu_kw"] = n_units * (cpu_idle + (cpu_max - cpu_idle) * u_cpu) / 1000.0
+        power_df["power_gpu_kw"] = n_units * (gpu_idle + (gpu_max - gpu_idle) * u_gpu) / 1000.0
+        power_df["power_total_kw"] = power_df["power_cpu_kw"] + power_df["power_gpu_kw"]
+
+    return power_df
+
+
+def engineer_power_features(power_df, roll_windows=None):
+    """Apply the full feature-engineering chain to a power-estimated DataFrame.
+
+    Adds cyclical temporal encodings, rolling statistics, and rate-of-change
+    features to *power_df*, then drops identifier columns and NaN rows.
+
+    Parameters
+    ----------
+    power_df : pd.DataFrame
+        Output of :func:`estimate_cluster_power` — must contain
+        ``timestamp`` and ``power_total_kw``.
+    roll_windows : list[int] | None
+        Rolling window sizes in time-steps. Defaults to ``[12, 72]``
+        (1 h and 6 h at 5-min bins).
+
+    Returns
+    -------
+    pd.DataFrame
+        Feature-enriched DataFrame with NaN rows removed.
+    """
+    from .loading import clean_processed_power_frame  # avoid circular at module level
+
+    if roll_windows is None:
+        roll_windows = [12, 72]
+
+    feat_df = power_df.copy()
+    feat_df = add_temporal_features(feat_df, time_col="timestamp")
+    feat_df = add_rolling_features(feat_df, target_col="power_total_kw", windows=roll_windows)
+    feat_df = add_rate_of_change(feat_df, target_col="power_total_kw")
+    feat_df = clean_processed_power_frame(feat_df)
+    feat_df = feat_df.dropna().reset_index(drop=True)
+    return feat_df
+
+
+def save_processed_dataset(feat_df, dataset_name: str, freq_seconds: int = 300) -> "Path":
+    """Persist a processed feature DataFrame to ``data/processed/``.
+
+    The file is named ``<dataset_name>_<freq_seconds>s.csv`` so that
+    :func:`~src.data_processing.loading.load_processed_datasets` can
+    discover it automatically on future runs.
+
+    Returns
+    -------
+    pathlib.Path
+        Absolute path of the saved CSV file.
+    """
+    save_dir = PROCESSED_DIR
+    save_dir.mkdir(parents=True, exist_ok=True)
+    save_path = save_dir / f"{dataset_name}_{freq_seconds}s.csv"
+    feat_df.to_csv(save_path, index=False)
+    return save_path
+
+
 def process_and_save(dataset_name="genai", freq_seconds=300, **kwargs):
     """Process a dataset and save to the processed directory."""
     os.makedirs(PROCESSED_DIR, exist_ok=True)

@@ -21,18 +21,17 @@ from src.data_processing.pipeline import (
     load_genai_pod_memory,
     load_genai_qps,
     load_gpu_v2020_machine_metrics,
-    aggregate_to_cluster_level,
-    spread_v2020_to_time_bins,
-    add_temporal_features,
-    add_rolling_features,
-    add_rate_of_change,
-    shared_time_anchor,
+    aggregate_genai_sources,
+    aggregate_v2020_sources,
+    estimate_cluster_power,
+    engineer_power_features,
+    save_processed_dataset,
     GPU_P_IDLE, GPU_P_MAX, CPU_P_IDLE, CPU_P_MAX, MEM_P_IDLE, MEM_P_MAX,
     RAW_DIR, EXTERNAL_DIR,
 )
-from src.models.architectures import get_model, MODEL_REGISTRY
+from src.models.architectures import get_model, MODEL_REGISTRY, build_model_kwargs
 from src.evaluation.trainer import prepare_data, train_model, evaluate_model, save_model
-from src.data_processing.loading import clean_processed_power_frame, load_processed_datasets
+from src.data_processing.loading import load_processed_datasets
 from src.models.inference import (
     autoregressive_forecast,
     forecast_metrics,
@@ -312,62 +311,18 @@ def _step_aggregation(dataset):
 
 
 def _aggregate_genai(freq):
-    gpu = load_genai_gpu_duty_cycle()
-    gmem = load_genai_gpu_memory()
-    pmem = load_genai_pod_memory()
-    qps_raw = load_genai_qps()
-    anchor_time = shared_time_anchor(gpu, gmem, pmem, qps_raw)
-
-    gpu_agg = aggregate_to_cluster_level(
-        gpu,
-        value_cols=["gpu_util"],
-        freq_seconds=freq,
-        anchor_time=anchor_time,
-    )
-    gmem_agg = aggregate_to_cluster_level(
-        gmem,
-        value_cols=["gpu_mem_bytes"],
-        freq_seconds=freq,
-        anchor_time=anchor_time,
-    )
-    pmem_agg = aggregate_to_cluster_level(
-        pmem,
-        value_cols=["mem_util"],
-        freq_seconds=freq,
-        anchor_time=anchor_time,
-    )
-    qps_agg = aggregate_to_cluster_level(
-        qps_raw,
-        value_cols=["qps"],
-        freq_seconds=freq,
-        agg_func="sum",
-        anchor_time=anchor_time,
-    )
-
-    agg_df = gpu_agg
-    for other in [gmem_agg, pmem_agg, qps_agg]:
-        agg_df = pd.merge(agg_df, other, on="timestamp", how="outer")
-    agg_df = agg_df.sort_values("timestamp").ffill().bfill().reset_index(drop=True)
-
-    n_containers = gpu["container_id"].nunique()
+    agg_df, meta = aggregate_genai_sources(freq)
     st.info(
-        f"Aggregated {len(gpu):,} records from {n_containers} containers "
-        f"into {len(agg_df)} time bins ({freq//60}-min)."
+        f"Aggregated {meta['n_records']:,} records from {meta['n_containers']} containers "
+        f"into {meta['n_bins']} time bins ({freq//60}-min)."
     )
     return agg_df
 
 def _aggregate_v2020(freq):
-    raw = load_gpu_v2020_machine_metrics()
-    value_cols = [
-        "machine_cpu", "machine_gpu", "machine_cpu_usr",
-        "machine_cpu_kernel", "machine_cpu_iowait", "machine_load_1"
-    ]
-    agg_df = spread_v2020_to_time_bins(raw, freq_seconds=freq, value_cols=value_cols)
-
-    n_machines = raw["machine"].nunique()
+    agg_df, meta = aggregate_v2020_sources(freq)
     st.info(
-        f"Spread {len(raw):,} instance records from {n_machines} machines "
-        f"across their lifetimes into {len(agg_df)} time bins ({freq//60}-min). "
+        f"Spread {meta['n_records']:,} instance records from {meta['n_machines']} machines "
+        f"across their lifetimes into {meta['n_bins']} time bins ({freq//60}-min). "
         f"Each instance's metrics are replicated into every bin it overlaps."
     )
     return agg_df
@@ -409,7 +364,7 @@ def _step_power_estimation(dataset, freq):
         mem_max = st.number_input("Memory Max Power (W)", 10, 100, int(MEM_P_MAX), step=5)
 
     if st.button("Estimate Power", key="power_btn"):
-        power_df = _compute_power(
+        power_df = estimate_cluster_power(
             agg_df, dataset, n_units, gpu_idle, gpu_max,
             cpu_idle, cpu_max, mem_idle, mem_max
         )
@@ -423,38 +378,6 @@ def _step_power_estimation(dataset, freq):
     if dataset in st.session_state.power_data:
         _show_power_results(dataset)
 
-
-def _compute_power(
-    agg_df, dataset, n_units, gpu_idle, gpu_max,
-    cpu_idle, cpu_max, mem_idle, mem_max
-):
-    power_df = agg_df.copy()
-
-    if dataset == "genai":
-        gpu_col = "gpu_util"
-        power_df["gpu_util_frac"] = power_df[gpu_col] / 100.0 if power_df[gpu_col].max() > 1.0 else power_df[gpu_col]
-        power_df["mem_util_frac"] = power_df["mem_util"] / 100.0 if power_df["mem_util"].max() > 1.0 else power_df["mem_util"]
-
-        u_gpu = np.clip(power_df["gpu_util_frac"].values, 0, 1)
-        u_mem = np.clip(power_df["mem_util_frac"].values, 0, 1)
-        power_df["power_gpu_kw"] = n_units * (gpu_idle + (gpu_max - gpu_idle) * u_gpu) / 1000.0
-        power_df["power_mem_kw"] = n_units * (mem_idle + (mem_max - mem_idle) * u_mem) / 1000.0
-        power_df["power_total_kw"] = power_df["power_gpu_kw"] + power_df["power_mem_kw"]
-
-        gpu_mem_max = power_df["gpu_mem_bytes"].max()
-        power_df["gpu_mem_util"] = power_df["gpu_mem_bytes"] / gpu_mem_max if gpu_mem_max > 0 else 0
-
-    elif dataset == "gpu_v2020":
-        power_df["cpu_util_frac"] = power_df["machine_cpu"].clip(0, 100) / 100.0
-        power_df["gpu_util_frac"] = power_df["machine_gpu"].clip(0, 100) / 100.0
-
-        u_cpu = np.clip(power_df["cpu_util_frac"].values, 0, 1)
-        u_gpu = np.clip(power_df["gpu_util_frac"].values, 0, 1)
-        power_df["power_cpu_kw"] = n_units * (cpu_idle + (cpu_max - cpu_idle) * u_cpu) / 1000.0
-        power_df["power_gpu_kw"] = n_units * (gpu_idle + (gpu_max - gpu_idle) * u_gpu) / 1000.0
-        power_df["power_total_kw"] = power_df["power_cpu_kw"] + power_df["power_gpu_kw"]
-
-    return power_df
 
 
 def _show_power_results(dataset):
@@ -498,22 +421,11 @@ def _step_feature_engineering(dataset, freq):
         st.caption(f"= {roll_window_2 * freq // 60} minutes")
 
     if st.button("Engineer Features", key="feat_btn"):
-        feat_df = power_df.copy()
-        feat_df = add_temporal_features(feat_df, time_col="timestamp")
-        feat_df = add_rolling_features(feat_df, target_col="power_total_kw",
-                                       windows=[roll_window_1, roll_window_2])
-        feat_df = add_rate_of_change(feat_df, target_col="power_total_kw")
-        feat_df = clean_processed_power_frame(feat_df)
-        feat_df = feat_df.dropna().reset_index(drop=True)
+        feat_df = engineer_power_features(power_df, roll_windows=[roll_window_1, roll_window_2])
+        save_path = save_processed_dataset(feat_df, dataset)
 
         st.session_state.final_data[dataset] = feat_df
         st.session_state.pipeline_params[dataset]["roll_windows"] = [roll_window_1, roll_window_2]
-
-        # Persist to disk so Forecast Replay can load it on restart
-        save_dir = PROJECT_ROOT / "data" / "processed"
-        save_dir.mkdir(parents=True, exist_ok=True)
-        save_path = save_dir / f"{dataset}_300s.csv"
-        feat_df.to_csv(save_path, index=False)
 
         new_cols = [c for c in feat_df.columns if c not in power_df.columns]
         st.success(f"Added {len(new_cols)} features -- final: "
@@ -1312,13 +1224,7 @@ def _run_training(
         st.markdown("---")
         st.markdown(f"### Training: {model_name}")
 
-        model_kwargs = {"hidden_dim": hidden_dim, "num_layers": num_layers, "dropout": dropout}
-        if model_name == "Transformer":
-            model_kwargs = {
-                "d_model": hidden_dim, "nhead": min(4, hidden_dim),
-                "num_layers": num_layers, "dropout": dropout,
-                "dim_feedforward": hidden_dim * 2
-            }
+        model_kwargs = build_model_kwargs(model_name, hidden_dim, num_layers, dropout)
 
         model = get_model(model_name, input_dim=data["input_dim"], **model_kwargs)
         param_count = sum(p.numel() for p in model.parameters())
