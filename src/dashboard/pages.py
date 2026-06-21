@@ -801,6 +801,9 @@ def page_forecast_replay():
     loaded_info = format_model_bundle_caption(model_bundle)
     if loaded_info:
         st.caption(loaded_info)
+    if model_bundle.get("compat_error"):
+        st.error(model_bundle["compat_error"])
+        st.stop()
     if model_bundle.get("compat_warning"):
         st.warning(model_bundle["compat_warning"], icon="⚠️")
     if model_bundle.get("dim_mismatch"):
@@ -1277,7 +1280,8 @@ def _run_training(
         )
         save_model(model, model_name, dataset, metrics, history,
                    window_size=window_size, train_ratio=train_ratio,
-                   input_dim=data["input_dim"])
+                   input_dim=data["input_dim"],
+                   feature_names=data["feature_names"])
 
         _show_training_results(model_name, metrics, history)
 

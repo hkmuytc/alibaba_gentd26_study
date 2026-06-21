@@ -42,7 +42,24 @@ def prepare_data(df, target_col="power_total_kw", feature_cols=None,
     if feature_cols is None:
         exclude = ["timestamp", "container_id", "worker_name", "machine",
                     "start_time", "end_time", "time_offset"]
-        feature_cols = [c for c in df.columns if c not in exclude and c != target_col]
+        preferred = [
+            "gpu_util_frac",
+            "gpu_mem_util",
+            "mem_util_frac",
+            "qps",
+            "hour_sin",
+            "hour_cos",
+            "dow_sin",
+            "dow_cos",
+            target_col,
+            f"{target_col}_roc",
+            f"{target_col}_roll_mean_12",
+            f"{target_col}_roll_std_12",
+            f"{target_col}_roll_mean_72",
+        ]
+        feature_cols = [c for c in preferred if c in df.columns and c not in exclude]
+        if not feature_cols:
+            feature_cols = [c for c in df.columns if c not in exclude and c != target_col]
     else:
         feature_cols = [c for c in feature_cols if c in df.columns]
 
@@ -226,7 +243,8 @@ def evaluate_model(model, test_loader, target_scaler, device="cpu"):
 
 
 def save_model(model, model_name, dataset_name, metrics, history,
-               window_size=24, train_ratio=0.8, input_dim=None):
+               window_size=24, train_ratio=0.8, input_dim=None,
+               feature_names=None):
     """Save model weights, metrics, history, and a manifest with metadata.
 
     File naming: {model}_{dataset}_w{window}_{YYYYMMDD}_{HHMMSS}_*
@@ -252,6 +270,7 @@ def save_model(model, model_name, dataset_name, metrics, history,
         "window_size": window_size,
         "train_ratio": train_ratio,
         "input_dim": input_dim,
+        "feature_names": list(feature_names) if feature_names is not None else None,
         "created": ts,
         "epochs_trained": len(history.get("train_loss", [])),
         "metrics": metrics,
@@ -318,7 +337,17 @@ def run_full_pipeline(df, model_names=None, dataset_label="genai",
             model, data["test_loader"], data["target_scaler"], device=device
         )
 
-        save_model(model, name, dataset_label, metrics, history)
+        save_model(
+            model,
+            name,
+            dataset_label,
+            metrics,
+            history,
+            window_size=window_size,
+            train_ratio=0.8,
+            input_dim=data["input_dim"],
+            feature_names=data["feature_names"],
+        )
 
         results[name] = {
             "model": model,

@@ -24,6 +24,68 @@ from sklearn.preprocessing import StandardScaler
 _MODELS_DIR = Path(__file__).resolve().parents[2] / "models" / "saved"
 
 
+def _power_roll_mean(window: np.ndarray, width: int) -> float:
+    tail = window[-min(len(window), width):]
+    return float(np.mean(tail))
+
+
+def _power_roll_std(window: np.ndarray, width: int) -> float:
+    tail = window[-min(len(window), width):]
+    return float(np.std(tail, ddof=1)) if len(tail) > 1 else 0.0
+
+
+def _advance_time_features(row: np.ndarray, feature_index: dict[str, int], next_ts: float) -> None:
+    dt = np.datetime64(int(next_ts), "s")
+    ts = np.datetime_as_string(dt, unit="s")
+    from datetime import datetime
+
+    parsed = datetime.fromisoformat(ts)
+    seconds_in_day = parsed.hour * 3600 + parsed.minute * 60 + parsed.second
+    day_of_week = parsed.weekday()
+
+    if "hour_sin" in feature_index:
+        row[feature_index["hour_sin"]] = np.sin(2 * np.pi * seconds_in_day / 86400)
+    if "hour_cos" in feature_index:
+        row[feature_index["hour_cos"]] = np.cos(2 * np.pi * seconds_in_day / 86400)
+    if "dow_sin" in feature_index:
+        row[feature_index["dow_sin"]] = np.sin(2 * np.pi * day_of_week / 7)
+    if "dow_cos" in feature_index:
+        row[feature_index["dow_cos"]] = np.cos(2 * np.pi * day_of_week / 7)
+    if "hour" in feature_index:
+        row[feature_index["hour"]] = float(parsed.hour)
+
+
+def _update_power_features(
+    row: np.ndarray,
+    feature_index: dict[str, int],
+    power_history_scaled: list[float],
+    pred_scaled: float,
+) -> None:
+    power_history_scaled.append(float(pred_scaled))
+
+    if "power_total_kw" in feature_index:
+        row[feature_index["power_total_kw"]] = float(pred_scaled)
+    if "power_total_kw_roc" in feature_index:
+        prev_val = power_history_scaled[-2] if len(power_history_scaled) >= 2 else power_history_scaled[-1]
+        row[feature_index["power_total_kw_roc"]] = float(pred_scaled - prev_val)
+    if "power_total_kw_roll_mean_12" in feature_index:
+        row[feature_index["power_total_kw_roll_mean_12"]] = _power_roll_mean(
+            np.asarray(power_history_scaled, dtype=np.float64), 12
+        )
+    if "power_total_kw_roll_std_12" in feature_index:
+        row[feature_index["power_total_kw_roll_std_12"]] = _power_roll_std(
+            np.asarray(power_history_scaled, dtype=np.float64), 12
+        )
+    if "power_total_kw_roll_mean_72" in feature_index:
+        row[feature_index["power_total_kw_roll_mean_72"]] = _power_roll_mean(
+            np.asarray(power_history_scaled, dtype=np.float64), 72
+        )
+    if "power_total_kw_roll_std_72" in feature_index:
+        row[feature_index["power_total_kw_roll_std_72"]] = _power_roll_std(
+            np.asarray(power_history_scaled, dtype=np.float64), 72
+        )
+
+
 # --------------------------------------------------------------------------- #
 # load_model_bundle                                                            #
 # --------------------------------------------------------------------------- #
@@ -80,6 +142,27 @@ def load_model_bundle(
     # when the model was trained.  We use the same prepare_data() logic.
     data = prepare_data(df, target_col=target_col, window_size=window_size, train_ratio=0.8)
     feature_names: list[str] = list(data["feature_names"])
+    manifest_features = manifest.get("feature_names")
+    compat_warning = None
+    compat_error = None
+    if manifest_features:
+        feature_names = [name for name in manifest_features if name in df.columns]
+        missing = [name for name in manifest_features if name not in df.columns]
+        if missing:
+            compat_warning = (
+                "Saved model expects feature columns missing from the current dataset: "
+                + ", ".join(missing)
+            )
+        if target_col not in manifest_features:
+            compat_error = (
+                f"Saved model was trained without '{target_col}' as an explicit input feature. "
+                "Retrain the model with the current recursive-power schema before using Forecast Replay."
+            )
+    elif manifest:
+        compat_error = (
+            "Saved model predates the current feature-schema manifest. "
+            "Retrain the model before using Forecast Replay."
+        )
 
     # Prefer input_dim from the manifest so the architecture exactly matches the
     # saved weights (the current df may have a different number of features).
@@ -106,6 +189,8 @@ def load_model_bundle(
         "weights_path": weights_path,
         "dim_mismatch": dim_mismatch,
         "input_dim": input_dim,
+        "compat_warning": compat_warning,
+        "compat_error": compat_error,
     }
 
 
@@ -136,8 +221,6 @@ def autoregressive_forecast(
     -------
     np.ndarray of shape (horizon,) with predictions in the original kW scale.
     """
-    import pandas as pd
-
     model = model.to(device)
     model.eval()
 
@@ -155,16 +238,27 @@ def autoregressive_forecast(
         else:
             features_scaled = features_scaled[:, :model_input_dim]
 
-    # We also need the *target* column index inside feature_names if it's there
-    # (some pipelines include the target as a feature for its own lags).
-    target_in_feats = target_col in feature_names
-    target_feat_idx = feature_names.index(target_col) if target_in_feats else None
+    feature_index = {name: idx for idx, name in enumerate(feature_names)}
+
+    if target_col not in feature_index:
+        raise ValueError(
+            f"Feature set must include '{target_col}' for recursive replay. Retrain the model with the new schema."
+        )
 
     # Seed the sliding window from the data that precedes the cutoff
     window = features_scaled[cutoff_idx - window_size : cutoff_idx].copy()  # (W, F)
+    power_history_scaled = window[:, feature_index[target_col]].astype(np.float64).tolist()
+
+    timestamps = df["timestamp"].values if "timestamp" in df.columns else None
+    step_seconds = 300
+    if timestamps is not None and len(timestamps) > 1:
+        diffs = np.diff(timestamps.astype(np.float64))
+        positive = diffs[diffs > 0]
+        if len(positive) > 0:
+            step_seconds = int(np.median(positive))
 
     preds_scaled: list[float] = []
-    for _ in range(horizon):
+    for step_idx in range(horizon):
         x = torch.tensor(window[np.newaxis], dtype=torch.float32).to(device)
         with torch.no_grad():
             out = model(x)  # (1, 1) or (1,)
@@ -173,8 +267,11 @@ def autoregressive_forecast(
 
         # Shift window and append the new predicted step
         new_row = window[-1].copy()
-        if target_feat_idx is not None:
-            new_row[target_feat_idx] = pred_scaled
+        _update_power_features(new_row, feature_index, power_history_scaled, pred_scaled)
+        if timestamps is not None:
+            last_known_ts = float(df["timestamp"].iloc[cutoff_idx - 1])
+            next_ts = last_known_ts + step_seconds * (step_idx + 1)
+            _advance_time_features(new_row, feature_index, next_ts)
         window = np.vstack([window[1:], new_row])
 
     preds_raw = np.array(preds_scaled).reshape(-1, 1)
