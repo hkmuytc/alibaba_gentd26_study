@@ -35,10 +35,19 @@ class TimeSeriesDataset(Dataset):
         return x, y
 
 
-def prepare_data(df, target_col="power_total_kw", feature_cols=None,
-                 window_size=24, train_ratio=0.8, clean_identifiers=True):
-    df = clean_processed_power_frame(df).copy() if clean_identifiers else df.copy()
+class WindowedDataset(Dataset):
+    def __init__(self, windows, targets):
+        self.windows = torch.FloatTensor(windows)
+        self.targets = torch.FloatTensor(targets)
 
+    def __len__(self):
+        return len(self.windows)
+
+    def __getitem__(self, idx):
+        return self.windows[idx], self.targets[idx]
+
+
+def _resolve_feature_columns(df, target_col="power_total_kw", feature_cols=None):
     if feature_cols is None:
         exclude = ["timestamp", "container_id", "worker_name", "machine",
                     "start_time", "end_time", "time_offset"]
@@ -62,6 +71,37 @@ def prepare_data(df, target_col="power_total_kw", feature_cols=None,
             feature_cols = [c for c in df.columns if c not in exclude and c != target_col]
     else:
         feature_cols = [c for c in feature_cols if c in df.columns]
+    return feature_cols
+
+
+def _build_window_samples(features, targets, window_size):
+    if len(features) <= window_size:
+        return (
+            np.empty((0, window_size, features.shape[1]), dtype=np.float32),
+            np.empty((0,), dtype=np.float32),
+            np.empty((0,), dtype=np.int64),
+        )
+
+    windows = []
+    target_values = []
+    target_indices = []
+    for target_idx in range(window_size, len(features)):
+        windows.append(features[target_idx - window_size:target_idx])
+        target_values.append(targets[target_idx])
+        target_indices.append(target_idx)
+
+    return (
+        np.asarray(windows, dtype=np.float32),
+        np.asarray(target_values, dtype=np.float32),
+        np.asarray(target_indices, dtype=np.int64),
+    )
+
+
+def prepare_data(df, target_col="power_total_kw", feature_cols=None,
+                 window_size=24, train_ratio=0.8, clean_identifiers=True):
+    df = clean_processed_power_frame(df).copy() if clean_identifiers else df.copy()
+
+    feature_cols = _resolve_feature_columns(df, target_col=target_col, feature_cols=feature_cols)
 
     features = df[feature_cols].values.astype(np.float32)
     targets = df[target_col].values.astype(np.float32)
@@ -105,6 +145,88 @@ def prepare_data(df, target_col="power_total_kw", feature_cols=None,
         "window_size": window_size,
         "raw_targets_test": targets[split_idx + window_size:],
         "timestamps_test": df["timestamp"].values[split_idx + window_size:] if "timestamp" in df.columns else None,
+    }
+
+
+def prepare_data_for_temporal_blocks(
+    df,
+    train_end: int,
+    val_end: int,
+    test_end: int | None = None,
+    target_col="power_total_kw",
+    feature_cols=None,
+    window_size=24,
+    batch_size=32,
+    clean_identifiers=True,
+):
+    """Prepare windowed train/validation/test loaders from explicit time boundaries.
+
+    Samples are assigned to train, validation, or test based on the timestamp of
+    their target point, while their input window may reach back into earlier data.
+    This preserves realistic forecasting context at split boundaries.
+    """
+    df = clean_processed_power_frame(df).copy() if clean_identifiers else df.copy()
+    feature_cols = _resolve_feature_columns(df, target_col=target_col, feature_cols=feature_cols)
+
+    features = df[feature_cols].values.astype(np.float32)
+    targets = df[target_col].values.astype(np.float32)
+
+    if test_end is None:
+        test_end = len(df)
+
+    scaler = StandardScaler()
+    features_scaled = features.copy()
+    features_scaled[:train_end] = scaler.fit_transform(features[:train_end])
+    features_scaled[train_end:] = scaler.transform(features[train_end:])
+
+    target_scaler = StandardScaler()
+    targets_scaled = targets.copy()
+    targets_scaled[:train_end] = target_scaler.fit_transform(
+        targets[:train_end].reshape(-1, 1)
+    ).flatten()
+    targets_scaled[train_end:] = target_scaler.transform(
+        targets[train_end:].reshape(-1, 1)
+    ).flatten()
+
+    windows, target_values, target_indices = _build_window_samples(
+        features_scaled,
+        targets_scaled,
+        window_size,
+    )
+
+    train_mask = target_indices < train_end
+    val_mask = (target_indices >= train_end) & (target_indices < val_end)
+    test_mask = (target_indices >= val_end) & (target_indices < test_end)
+
+    train_dataset = WindowedDataset(windows[train_mask], target_values[train_mask])
+    val_dataset = WindowedDataset(windows[val_mask], target_values[val_mask])
+    test_dataset = WindowedDataset(windows[test_mask], target_values[test_mask])
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+    timestamps = df["timestamp"].values if "timestamp" in df.columns else None
+
+    return {
+        "train_loader": train_loader,
+        "val_loader": val_loader,
+        "test_loader": test_loader,
+        "scaler": scaler,
+        "target_scaler": target_scaler,
+        "feature_names": feature_cols,
+        "input_dim": len(feature_cols),
+        "window_size": window_size,
+        "train_end": train_end,
+        "val_end": val_end,
+        "test_end": test_end,
+        "train_target_indices": target_indices[train_mask],
+        "val_target_indices": target_indices[val_mask],
+        "test_target_indices": target_indices[test_mask],
+        "raw_targets_val": targets[target_indices[val_mask]],
+        "raw_targets_test": targets[target_indices[test_mask]],
+        "timestamps_val": timestamps[target_indices[val_mask]] if timestamps is not None else None,
+        "timestamps_test": timestamps[target_indices[test_mask]] if timestamps is not None else None,
     }
 
 

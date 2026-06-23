@@ -8,6 +8,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 from .window_sweep_config import (
     FIXED_WINDOW,
@@ -42,8 +43,32 @@ def _horizon_tick_labels(steps: np.ndarray) -> list[str]:
     return labels
 
 
+def _save_numeric_table(df: pd.DataFrame, output_path: Path) -> None:
+    """Persist one numeric companion table for a plotted figure."""
+    df.to_csv(output_path, index=False)
+    print(f"  Saved: {output_path.relative_to(PROJECT_ROOT)}")
+
+
 def plot_lookback_results(results: dict, window_sizes: list[int], output_dir: Path) -> None:
     """Plot one-step metrics against lookback window size."""
+    lookback_rows = []
+    for model_name in MODEL_NAMES + ["Persistence"]:
+        if model_name not in results:
+            continue
+        for window_size in window_sizes:
+            entry = results[model_name].get(str(window_size))
+            if not entry:
+                continue
+            lookback_rows.append({
+                "model": model_name,
+                "window_size_steps": window_size,
+                "window_size_minutes": window_size * STEP_MINUTES,
+                "MAE": entry.get("MAE"),
+                "RMSE": entry.get("RMSE"),
+                "MAPE": entry.get("MAPE"),
+                "R2": entry.get("R2"),
+            })
+
     metric_specs = [
         ("MAE", "MAE (kW)", False),
         ("RMSE", "RMSE (kW)", False),
@@ -118,6 +143,7 @@ def plot_lookback_results(results: dict, window_sizes: list[int], output_dir: Pa
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  Saved: {out_path.relative_to(PROJECT_ROOT)}")
+    _save_numeric_table(pd.DataFrame(lookback_rows), output_dir / "fig_lookback_data.csv")
 
 
 def plot_horizon_results(results: dict, max_horizon: int, output_dir: Path) -> None:
@@ -125,6 +151,22 @@ def plot_horizon_results(results: dict, max_horizon: int, output_dir: Path) -> N
     steps = np.arange(1, max_horizon + 1)
     tick_mask = np.array([step in {1, 2, 3, 4, 6, 8, 12, 18, 24} for step in steps])
     tick_positions = steps[tick_mask]
+    horizon_rows = []
+
+    for model_name in MODEL_NAMES + ["Persistence"]:
+        if model_name not in results:
+            continue
+        entry = results[model_name]
+        means = np.array(entry["mean_mae_per_step"], dtype=float)
+        stds = np.array(entry["std_mae_per_step"], dtype=float)
+        for step_idx, (mean_value, std_value) in enumerate(zip(means, stds), start=1):
+            horizon_rows.append({
+                "model": model_name,
+                "horizon_step": step_idx,
+                "horizon_minutes": step_idx * STEP_MINUTES,
+                "mean_mae": float(mean_value),
+                "std_mae": float(std_value),
+            })
 
     fig, ax = plt.subplots(figsize=(11, 6))
 
@@ -181,6 +223,7 @@ def plot_horizon_results(results: dict, max_horizon: int, output_dir: Path) -> N
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  Saved: {out_path.relative_to(PROJECT_ROOT)}")
+    _save_numeric_table(pd.DataFrame(horizon_rows), output_dir / "fig_horizon_data.csv")
 
 
 def plot_heatmap(lookback_results: dict, window_sizes: list[int], output_dir: Path) -> None:
@@ -188,12 +231,19 @@ def plot_heatmap(lookback_results: dict, window_sizes: list[int], output_dir: Pa
     n_rows = len(MODEL_NAMES)
     n_cols = len(window_sizes)
     mat = np.full((n_rows, n_cols), np.nan)
+    heatmap_rows = []
 
     for row_idx, model_name in enumerate(MODEL_NAMES):
         for col_idx, window_size in enumerate(window_sizes):
             entry = lookback_results.get(model_name, {}).get(str(window_size))
             if entry and entry.get("MAE") is not None:
                 mat[row_idx, col_idx] = float(entry["MAE"])
+                heatmap_rows.append({
+                    "model": model_name,
+                    "window_size_steps": window_size,
+                    "window_size_minutes": window_size * STEP_MINUTES,
+                    "MAE": float(entry["MAE"]),
+                })
 
     vmin = np.nanmin(mat)
     vmax = np.nanmax(mat)
@@ -225,6 +275,7 @@ def plot_heatmap(lookback_results: dict, window_sizes: list[int], output_dir: Pa
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  Saved: {out_path.relative_to(PROJECT_ROOT)}")
+    _save_numeric_table(pd.DataFrame(heatmap_rows), output_dir / "fig_heatmap_data.csv")
 
 
 def print_lookback_summary(results: dict, window_sizes: list[int]) -> None:

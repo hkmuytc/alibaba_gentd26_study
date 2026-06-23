@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import matplotlib
 matplotlib.use("Agg")
@@ -12,20 +13,14 @@ import pandas as pd
 import torch
 from sklearn.metrics import mean_absolute_error
 
-from src.evaluation.trainer import evaluate_model, train_model
-from src.models.architectures import build_model_kwargs, get_model
-
 from .window_sweep_config import (
-    DROPOUT,
     FIXED_WINDOW,
-    HIDDEN_DIM,
     MODEL_COLORS,
     MODEL_NAMES,
-    NUM_LAYERS,
     PROJECT_ROOT,
     TARGET_COL,
 )
-from .window_sweep_experiments import prepare_model_inputs
+from .window_sweep_experiments import load_or_train_single_model_window, prepare_model_inputs
 
 
 EXOGENOUS_OBSERVED = {"gpu_util_frac", "gpu_mem_util", "mem_util_frac", "qps"}
@@ -101,45 +96,77 @@ def _dataframe_to_markdown(df: pd.DataFrame) -> str:
     return "\n".join("| " + " | ".join(values) + " |" for values in rows) + "\n"
 
 
-def train_fresh_fixed_window_models_for_analysis(
+def save_replay_summary_tables(output_dir: Path) -> tuple[Path, Path]:
+    """Convert replay_summary.json into CSV and Markdown tables."""
+    output_dir = output_dir.resolve()
+    replay_path = output_dir / "replay_summary.json"
+    if not replay_path.exists():
+        raise FileNotFoundError(f"Replay summary not found: {replay_path}")
+
+    replay_summary = json.loads(replay_path.read_text(encoding="utf-8"))
+    rows = []
+    for fold_key, fold_values in replay_summary.items():
+        for model_name, metrics in fold_values.items():
+            rows.append({
+                "fold": fold_key,
+                "model": model_name,
+                "avg_mae": metrics.get("avg_mae"),
+                "baseline_mae": metrics.get("baseline_mae"),
+                "improvement_pct": metrics.get("improvement_pct"),
+                "win_rate": metrics.get("win_rate"),
+                "n_windows": metrics.get("n_windows"),
+            })
+
+    table_df = pd.DataFrame(rows)
+    csv_path = output_dir / "table_replay_summary.csv"
+    md_path = output_dir / "table_replay_summary.md"
+    table_df.to_csv(csv_path, index=False)
+    md_path.write_text(_dataframe_to_markdown(table_df), encoding="utf-8")
+    print(f"  Saved: {csv_path.relative_to(PROJECT_ROOT)}")
+    print(f"  Saved: {md_path.relative_to(PROJECT_ROOT)}")
+    return csv_path, md_path
+
+
+def load_or_train_fixed_window_models_for_analysis(
     df: pd.DataFrame,
     device: str,
     epochs: int,
     patience: int,
 ) -> dict[str, dict]:
-    """Train fresh fixed-window models for analysis-only artifacts."""
-    data = prepare_model_inputs(df, FIXED_WINDOW)
+    """Load or train the fixed-window models used for analysis artifacts."""
     runs: dict[str, dict] = {}
+    data = prepare_model_inputs(df, FIXED_WINDOW)
 
     for model_name in MODEL_NAMES:
-        kwargs = build_model_kwargs(model_name, HIDDEN_DIM, NUM_LAYERS, DROPOUT)
-        model = get_model(model_name, input_dim=data["input_dim"], **kwargs)
-        history = train_model(
-            model,
-            data["train_loader"],
-            val_loader=data["test_loader"],
-            epochs=epochs,
-            lr=1e-3,
-            patience=patience,
-            device=device,
+        runs[model_name] = load_or_train_single_model_window(
+            data,
+            model_name,
+            FIXED_WINDOW,
+            device,
+            epochs,
+            patience,
         )
-        _, _, metrics = evaluate_model(model, data["test_loader"], data["target_scaler"], device=device)
-        runs[model_name] = {
-            "model": model,
-            "history": history,
-            "metrics": metrics,
-            "data": data,
-        }
     return runs
 
 
 def save_training_loss_curves(model_runs: dict[str, dict], output_dir: Path) -> Path:
     """Save one training-loss figure with a panel for each model."""
+    loss_rows = []
     fig, axes = plt.subplots(1, len(model_runs), figsize=(5 * len(model_runs), 4), squeeze=False)
     axes_flat = axes.flatten()
 
     for ax, model_name in zip(axes_flat, MODEL_NAMES):
         history = model_runs[model_name]["history"]
+        source = model_runs[model_name].get("source", "unknown")
+        for epoch_idx, train_loss in enumerate(history["train_loss"], start=1):
+            val_loss = history["val_loss"][epoch_idx - 1] if epoch_idx - 1 < len(history["val_loss"]) else np.nan
+            loss_rows.append({
+                "model": model_name,
+                "source": source,
+                "epoch": epoch_idx,
+                "train_loss": float(train_loss),
+                "val_loss": float(val_loss),
+            })
         ax.plot(history["train_loss"], label="Train", color="#1f77b4", linewidth=2)
         ax.plot(history["val_loss"], label="Validation", color="#ff7f0e", linewidth=2, linestyle="--")
         ax.set_title(model_name)
@@ -154,6 +181,9 @@ def save_training_loss_curves(model_runs: dict[str, dict], output_dir: Path) -> 
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved: {out_path.relative_to(PROJECT_ROOT)}")
+    loss_csv_path = output_dir / "fig_training_loss_curves_data.csv"
+    pd.DataFrame(loss_rows).to_csv(loss_csv_path, index=False)
+    print(f"  Saved: {loss_csv_path.relative_to(PROJECT_ROOT)}")
     return out_path
 
 
@@ -256,12 +286,80 @@ def _infer_device(model_runs: dict[str, dict]) -> str:
     return str(next(first_model.parameters()).device)
 
 
+def save_results_summary_manifest(output_dir: Path) -> Path:
+    """Save one compact numeric summary for later report writing."""
+    lookback_df = pd.read_csv(output_dir / "fig_lookback_data.csv")
+    horizon_df = pd.read_csv(output_dir / "fig_horizon_data.csv")
+    loss_df = pd.read_csv(output_dir / "fig_training_loss_curves_data.csv")
+    importance_df = pd.read_csv(output_dir / "feature_importance.csv")
+
+    best_lookback = (
+        lookback_df.sort_values("MAE")
+        .groupby("model", as_index=False)
+        .first()[["model", "window_size_steps", "window_size_minutes", "MAE", "RMSE", "MAPE", "R2"]]
+    )
+
+    representative_steps = [1, 2, 4, 6, 8, 12, 18, 24]
+    representative_horizon = horizon_df[horizon_df["horizon_step"].isin(representative_steps)].copy()
+    best_horizon_rows = []
+    for step in representative_steps:
+        step_df = representative_horizon[representative_horizon["horizon_step"] == step]
+        if step_df.empty:
+            continue
+        best_row = step_df.loc[step_df["mean_mae"].idxmin()]
+        best_horizon_rows.append({
+            "horizon_step": int(best_row["horizon_step"]),
+            "horizon_minutes": int(best_row["horizon_minutes"]),
+            "best_model": str(best_row["model"]),
+            "best_mean_mae": float(best_row["mean_mae"]),
+        })
+
+    best_val_loss = (
+        loss_df.sort_values("val_loss")
+        .groupby("model", as_index=False)
+        .first()[["model", "epoch", "val_loss", "source"]]
+    )
+
+    top_importance = (
+        importance_df.sort_values(["model", "importance_mae_increase"], ascending=[True, False])
+        .groupby("model", as_index=False)
+        .first()[["model", "feature", "importance_mae_increase"]]
+    )
+
+    summary = {
+        "best_lookback_by_model": best_lookback.to_dict(orient="records"),
+        "best_model_by_representative_horizon": best_horizon_rows,
+        "best_validation_loss_by_model": best_val_loss.to_dict(orient="records"),
+        "top_feature_importance_by_model": top_importance.to_dict(orient="records"),
+    }
+
+    manifest_path = output_dir / "results_summary_manifest.json"
+    manifest_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    print(f"  Saved: {manifest_path.relative_to(PROJECT_ROOT)}")
+    return manifest_path
+
+
 def generate_analysis_outputs(df: pd.DataFrame, device: str, epochs: int, patience: int, output_dir: Path) -> None:
     """Generate the extra table and figures requested for model analysis."""
     print("\n[Additional Analysis]")
     fixed_window_data = prepare_model_inputs(df, FIXED_WINDOW)
     save_input_variable_table(fixed_window_data["feature_names"], output_dir)
-    print("  Training fresh fixed-window models for loss curves and feature importance")
-    model_runs = train_fresh_fixed_window_models_for_analysis(df, device, epochs, patience)
+    save_replay_summary_tables(output_dir)
+    print("  Loading or training fixed-window models for loss curves and feature importance")
+    model_runs = load_or_train_fixed_window_models_for_analysis(df, device, epochs, patience)
     save_training_loss_curves(model_runs, output_dir)
     save_feature_importance_plot(model_runs, output_dir)
+    manifest = {
+        "input_variable_table": "table_input_variables.csv",
+        "lookback_plot_data": "fig_lookback_data.csv",
+        "horizon_plot_data": "fig_horizon_data.csv",
+        "heatmap_plot_data": "fig_heatmap_data.csv",
+        "training_loss_plot_data": "fig_training_loss_curves_data.csv",
+        "feature_importance_data": "feature_importance.csv",
+        "lookback_results_cache": "lookback_results.json",
+        "horizon_results_cache": "horizon_results.json",
+    }
+    manifest_path = output_dir / "numeric_results_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    print(f"  Saved: {manifest_path.relative_to(PROJECT_ROOT)}")
+    save_results_summary_manifest(output_dir)

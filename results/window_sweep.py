@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import json
 from pathlib import Path
 
 
@@ -23,10 +24,12 @@ from results.support.window_sweep_config import (
     MODEL_NAMES,
     N_CUTOFFS,
     OUTPUT_DIR,
+    REPLAY_SUMMARY_HORIZON,
     WINDOW_SIZES,
     DATASET_NAME,
 )
 from results.support.window_sweep_experiments import (
+    run_fixed_horizon_replay_summary,
     run_multistep_horizon_study,
     run_one_step_lookback_study,
 )
@@ -64,6 +67,7 @@ def main() -> None:
     if args.plot_only:
         lookback_results = load_cached_results(lookback_cache)
         horizon_results = load_cached_results(horizon_cache)
+        replay_summary = load_cached_results(OUTPUT_DIR / "replay_summary.json")
     else:
         lookback_results = run_one_step_lookback_study(
             df,
@@ -81,6 +85,16 @@ def main() -> None:
             horizon_cache,
             rebuild_cache=args.rebuild_study_results,
         )
+        replay_summary = run_fixed_horizon_replay_summary(
+            df,
+            device,
+            epochs,
+            patience,
+            REPLAY_SUMMARY_HORIZON,
+        )
+        replay_summary_path = OUTPUT_DIR / "replay_summary.json"
+        replay_summary_path.write_text(json.dumps(replay_summary, indent=2), encoding="utf-8")
+        print(f"Saved: {replay_summary_path.relative_to(PROJECT_ROOT)}")
 
     visualize_sweep_results(lookback_results, horizon_results)
     if df is not None:

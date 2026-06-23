@@ -1,0 +1,118 @@
+{
+  "figure": "fig_methodology_windowing.png",
+  "panels": [
+    {
+      "panel": "one_step",
+      "history_window": {
+        "start": 7.2,
+        "end": 8.7
+      },
+      "target_window": {
+        "start": 8.7,
+        "end": 9.1
+      }
+    },
+    {
+      "panel": "autoregressive",
+      "history_window": {
+        "start": 7.0,
+        "end": 8.3
+      },
+      "rollout_boxes": [
+        {
+          "start": 8.3,
+          "end": 8.64,
+          "step": 1
+        },
+        {
+          "start": 8.64,
+          "end": 8.98,
+          "step": 2
+        },
+        {
+          "start": 8.98,
+          "end": 9.32,
+          "step": 3
+        },
+        {
+          "start": 9.32,
+          "end": 9.66,
+          "step": 4
+        },
+        {
+          "start": 9.66,
+          "end": 10.0,
+          "step": 5
+        }
+      ]
+    },
+    {
+      "panel": "rolling_origin",
+      "rows": [
+        {
+          "label": "Origin 1",
+          "train": {
+            "x": 1.4,
+            "y": 2.8,
+            "w": 4.2,
+            "h": 0.58
+          },
+          "validation": {
+            "x": 5.6,
+            "y": 2.8,
+            "w": 1.2,
+            "h": 0.58
+          },
+          "test": {
+            "x": 6.8,
+            "y": 2.8,
+            "w": 1.2,
+            "h": 0.58
+          }
+        },
+        {
+          "label": "Origin 2",
+          "train": {
+            "x": 1.4,
+            "y": 1.85,
+            "w": 5.1,
+            "h": 0.58
+          },
+          "validation": {
+            "x": 6.5,
+            "y": 1.85,
+            "w": 1.2,
+            "h": 0.58
+          },
+          "test": {
+            "x": 7.7,
+            "y": 1.85,
+            "w": 1.2,
+            "h": 0.58
+          }
+        },
+        {
+          "label": "Origin 3",
+          "train": {
+            "x": 1.4,
+            "y": 0.9,
+            "w": 6.0,
+            "h": 0.58
+          },
+          "validation": {
+            "x": 7.4,
+            "y": 0.9,
+            "w": 1.2,
+            "h": 0.58
+          },
+          "test": {
+            "x": 8.6,
+            "y": 0.9,
+            "w": 1.2,
+            "h": 0.58
+          }
+        }
+      ]
+    }
+  ]
+}
