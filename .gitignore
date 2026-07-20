@@ -1,28 +1,5 @@
 # Ignore all data files (download via download_data.sh)
 data/
-
-# Ignore all model weight/metric files ...
-models/saved/*.pt
-models/saved/*_history.json
-models/saved/*_metrics.json
-models/saved/*_manifest.json
-
-# ... except the three genai models used by reproduce_results.py
-# GRU on GenTD26 (R2=0.587)
-!models/saved/GRU_genai_w24_20260521_104305_weights.pt
-!models/saved/GRU_genai_w24_20260521_104305_manifest.json
-!models/saved/GRU_genai_w24_20260521_104305_metrics.json
-!models/saved/GRU_genai_w24_20260521_104305_history.json
-
-# LSTM on GenTD26 (best available)
-!models/saved/LSTM_genai_w24_20260521_104257_weights.pt
-!models/saved/LSTM_genai_w24_20260521_104257_manifest.json
-!models/saved/LSTM_genai_w24_20260521_104257_metrics.json
-!models/saved/LSTM_genai_w24_20260521_104257_history.json
-
-# Transformer on GenTD26 (R2=0.394)
-!models/saved/Transformer_genai_w24_20260521_104306_weights.pt
-!models/saved/Transformer_genai_w24_20260521_104306_manifest.json
-!models/saved/Transformer_genai_w24_20260521_104306_metrics.json
-!models/saved/Transformer_genai_w24_20260521_104306_history.json
 __pycache__
+.qwen
+.DS_Store

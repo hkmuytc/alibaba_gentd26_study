@@ -6,12 +6,12 @@ import streamlit as st
 PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.dashboard.pages import (
+from dashboard.pages import (
     init_session_state,
     render_selected_page,
     render_sidebar,
 )
-from src.dashboard.theme import apply_dashboard_theme
+from dashboard.theme import apply_dashboard_theme
 
 PAGE_TITLE = "Power Demand Forecasting of Data Center (Alibaba Cluster)"
 def main():
