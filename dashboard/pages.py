@@ -78,6 +78,7 @@ def render_selected_page(page: str) -> None:
     _PAGE_HANDLERS: dict[str, callable] = {
         Page.ONE_STEP.value: page_one_step,
         Page.MULTI_STEP.value: page_multi_step,
+        Page.ECS_REALTIME.value: page_ecs_realtime,
     }
     handler = _PAGE_HANDLERS.get(page)
     if handler is None:
@@ -632,6 +633,7 @@ def _sliding_window_predictions_section(dataset_key, df, target_col, x_vals,
         st.dataframe(metrics_df.style.format("{:.4f}"), use_container_width=True)
         st.info("Train models in this session to see the predictions overlay chart.")
 
+@st.cache_data(show_spinner="Loading cluster data…")
 def _load_base_dataframe():
     import sys
     from pathlib import Path
@@ -645,121 +647,586 @@ def _load_base_dataframe():
     return df
 
 def page_one_step():
-    import streamlit as st
     st.title("Chapter 1: One-Step Anticipation")
-    st.markdown("Demonstrating generalized modeling performance resolving native next-minute sequences from the **50/25/25 split**.")
+    st.markdown(
+        "Can a Transformer predict the **next minute's** power demand better than "
+        "simply repeating the last observed value? This chapter tests the model on "
+        "the **unseen 25%** of the GenTD26 cluster trace (50/25/25 split)."
+    )
     df = _load_base_dataframe()
-    _render_forecast_tab(df, 1, "One-Step Anticipation")
+    data = _prepare_forecast_data(df, 1, "One-Step Anticipation")
+    if data is None:
+        st.error("Could not load cached Transformer. Ensure the model cache is populated.")
+        st.stop()
+    _render_forecast_overview(data)
+    _render_forecast_simulator(data, 1)
+
 
 def page_multi_step():
-    import streamlit as st
     st.title("Chapter 2: Multi-Step Averaging")
-    st.markdown("Extending the inference sequences physically to evaluate Burst Interception and Tracking constraints longitudinally.")
-    h_val = st.select_slider("Forecast Horizon ($h$ minutes):", options=[1, 2, 3, 5, 8, 10, 12, 15, 18, 20, 24], value=12)
+    st.markdown(
+        "Instead of predicting a single next minute, what if we forecast the "
+        "**average power over the next *h* minutes**? This smooths out noise and "
+        "tests how far ahead the model can look."
+    )
+    h_val = st.select_slider(
+        "Forecast Horizon ($h$ minutes):",
+        options=[1, 2, 3, 5, 8, 10, 12, 15, 18, 20, 24], value=12,
+    )
     df = _load_base_dataframe()
-    _render_forecast_tab(df, h_val, "Multi-Step Averaging")
+    data = _prepare_forecast_data(df, h_val, "Multi-Step Averaging")
+    if data is None:
+        st.error(f"Could not load cached Transformer for horizon {h_val}.")
+        st.stop()
+    _render_forecast_overview(data)
+    _render_forecast_simulator(data, h_val)
 
-def _render_forecast_tab(df, h_val, mode_title):
+
+# ---------------------------------------------------------------------------
+# Forecast data preparation (cached in session state)
+# ---------------------------------------------------------------------------
+def _prepare_forecast_data(df, h_val, mode_title):
+    cache_key = f"_fc_h{h_val}"
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+
     from dashboard.inference import load_v3_model_bundle
-    from core.pipeline import estimate_power_kw
+    from core.pipeline import estimate_power_kw, engineer_features
+
     bundle = load_v3_model_bundle("Transformer", horizon=h_val)
     if not bundle:
-        st.error(f"Could not load cached Transformer for horizon {h_val}. Ensure the split_50_25_25_final cache is populated.")
-        st.stop()
-        
-    st.caption(f"**Loaded Champion Model:** Transformer (w=60) on 50/25/25 Split. {bundle.get('meta', {}).get('MAE', '')}")
+        return None
 
-    # Engineer the exact 27 cols needed via v3 pipeline
-    from core.pipeline import engineer_features
     feat_df = engineer_features(df).bfill().ffill()
     feature_cols = list(feat_df.columns)
-    
+
     y_all_raw = feat_df["gpu_util"].values.astype(np.float32)
     X_all_raw = feat_df.values
-    
+
     def forward_mean(y_array, h):
         out = np.full_like(y_array, np.nan)
         for i in range(len(y_array) - h):
-            out[i] = np.mean(y_array[i+1 : i+h+1])
+            out[i] = np.mean(y_array[i + 1: i + h + 1])
         return out
-        
-    if mode_title == "Multi-Step Averaging":
-        y_target = forward_mean(y_all_raw, h_val)
-    else:
-        y_target = y_all_raw.copy()
-        
+
+    y_target = forward_mean(y_all_raw, h_val) if mode_title == "Multi-Step Averaging" else y_all_raw.copy()
+
     valid = ~np.isnan(y_target) & ~np.any(np.isnan(X_all_raw), axis=1)
     valid_indices = np.where(valid)[0]
     valid_indices = valid_indices[valid_indices >= 60]
-    
-    test_start = int(len(df) * 0.75) # After train + val
+
+    test_start = int(len(df) * 0.75)
     test_indices = valid_indices[valid_indices >= test_start]
-    
     if len(test_indices) == 0:
-        st.error("No valid testing indices available.")
-        st.stop()
-        
-    # Build test arrays
-    X_te = np.array([X_all_raw[i - 60 : i] for i in test_indices], dtype=np.float32)
+        return None
+
+    X_te = np.array([X_all_raw[i - 60: i] for i in test_indices], dtype=np.float32)
     y_te = y_target[test_indices]
     yp_te = y_all_raw[test_indices - 1]
-    
-    # Transform input
+
     feat_scaler = bundle["scaler"]
     tgt_scaler = bundle["target_scaler"]
     X_scaled = feat_scaler.transform(X_te.reshape(-1, len(feature_cols))).reshape(X_te.shape)
-    
+
     model = bundle["model"]
     model.eval()
     with torch.no_grad():
         preds_scaled = model(torch.tensor(X_scaled, dtype=torch.float32)).numpy()
-        
-    # Scalers require a 2D array: (n_samples, 1)
     if preds_scaled.ndim == 1:
         preds_scaled = preds_scaled.reshape(-1, 1)
-        
+
     deltas = tgt_scaler.inverse_transform(preds_scaled).flatten()
     y_pred_util = yp_te + deltas
-    
-    n_gpus = 110 # approx median
-    # In v3, active_pod_ratio is mapped into feat_df natively by the pipeline
+
+    n_gpus = 110
     apr = feat_df["active_pod_ratio"].values[test_indices - 1]
-    
+
     pwr_pred = estimate_power_kw(y_pred_util, apr, n_gpus)
     pwr_true = estimate_power_kw(y_te, apr, n_gpus)
     pwr_persist = estimate_power_kw(yp_te, apr, n_gpus)
-    
+
     timestamps = pd.to_datetime(df["timestamp"].values[test_indices], unit="s")
-    
-    st.subheader(f"Test Set Analytics ({len(test_indices)} periods)")
-    
+
+    all_apr = feat_df["active_pod_ratio"].values
+    all_power = estimate_power_kw(y_all_raw, all_apr, n_gpus)
+    all_timestamps = pd.to_datetime(df["timestamp"].values, unit="s")
+
+    data = {
+        "timestamps": timestamps,
+        "pwr_true": pwr_true,
+        "pwr_pred": pwr_pred,
+        "pwr_persist": pwr_persist,
+        "test_indices": test_indices,
+        "all_power": all_power,
+        "all_timestamps": all_timestamps,
+        "n_steps": len(test_indices),
+        "h_val": h_val,
+        "mode_title": mode_title,
+        "bundle_meta": bundle.get("meta", {}),
+    }
+    st.session_state[cache_key] = data
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Overview section (full test-set chart + aggregate metrics)
+# ---------------------------------------------------------------------------
+def _render_forecast_overview(data):
+    meta = data["bundle_meta"]
+    meta_str = f"MAE={meta.get('MAE', '?')}" if meta else ""
+    st.caption(
+        f"**Champion Model:** Transformer (w=60, 50/25/25 split). {meta_str}"
+    )
+
+    timestamps = data["timestamps"]
+    pwr_true, pwr_pred, pwr_persist = data["pwr_true"], data["pwr_pred"], data["pwr_persist"]
+
+    st.subheader(f"Full Test Set — {data['n_steps']} periods")
+
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=timestamps, y=pwr_true, mode="lines", name="Actual Required Power", line=dict(color="black", width=2.5)))
-    fig.add_trace(go.Scatter(x=timestamps, y=pwr_persist, mode="lines", name="Static Persistence Baseline", line=dict(color="#BDBDBD", width=2)))
-    fig.add_trace(go.Scatter(x=timestamps, y=pwr_pred, mode="lines", name="Transformer Prediction", line=dict(color="#D84315", width=2.5)))
-    
+    fig.add_trace(go.Scatter(
+        x=timestamps, y=pwr_true, mode="lines",
+        name="Actual Power", line=dict(color="black", width=2.5),
+    ))
+    fig.add_trace(go.Scatter(
+        x=timestamps, y=pwr_persist, mode="lines",
+        name="Persistence Baseline", line=dict(color="#BDBDBD", width=1.8, dash="dot"),
+    ))
+    fig.add_trace(go.Scatter(
+        x=timestamps, y=pwr_pred, mode="lines",
+        name="Transformer Prediction", line=dict(color="#D84315", width=2),
+    ))
     fig.update_layout(
-        title="Dynamic Track vs Baseline Hysteresis (Test Set 50/25/25)",
-        xaxis_title="Time", 
-        yaxis_title="Estimated Cluster Power (kW)",
-        hovermode="x unified",
-        margin=dict(l=40, r=40, t=40, b=40)
+        xaxis_title="Time", yaxis_title="Cluster Power (kW)",
+        hovermode="x unified", height=380,
+        margin=dict(l=50, r=50, t=60, b=50),
     )
     st.plotly_chart(fig, use_container_width=True)
-    
-    import sklearn.metrics as metrics
-    mae_model = metrics.mean_absolute_error(pwr_true, pwr_pred)
-    mae_persist = metrics.mean_absolute_error(pwr_true, pwr_persist)
-    imp = (mae_persist - mae_model) / mae_persist * 100
-    
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Persistence MAE", f"{mae_persist:.4f} kW")
-    c2.metric("Transformer MAE", f"{mae_model:.4f} kW", delta=f"{imp:.2f}% Improvement")
-    
-    st.info("The Transformer intelligently bypasses the static limits of persistence tracking, allowing it to predict massive generative spikes efficiently and identify burst decay boundaries for dynamic overprovisioning savings.", icon="💡")
 
-def _show_replay_preview(*args, **kwargs):
-    pass
+    from sklearn.metrics import mean_absolute_error
+    mae_m = mean_absolute_error(pwr_true, pwr_pred)
+    mae_p = mean_absolute_error(pwr_true, pwr_persist)
+    imp = (mae_p - mae_m) / mae_p * 100
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Persistence MAE", f"{mae_p:.4f} kW")
+    c2.metric("Transformer MAE", f"{mae_m:.4f} kW", delta=f"{imp:.1f}% better")
+    wins = int(np.sum(np.abs(pwr_true - pwr_pred) < np.abs(pwr_true - pwr_persist)))
+    c3.metric("Model Win Rate", f"{wins}/{len(pwr_true)} ({wins / len(pwr_true) * 100:.0f}%)")
+
+
+# ---------------------------------------------------------------------------
+# Interactive step-by-step forecast simulator
+# ---------------------------------------------------------------------------
+def _render_forecast_simulator(data, h_val):
+    n_steps = data["n_steps"]
+    slider_key = f"sim_slider_{h_val}"
+
+    if slider_key not in st.session_state:
+        st.session_state[slider_key] = 0
+
+    st.markdown("---")
+    st.subheader("🔬 Step-by-Step Forecast Simulator")
+
+    horizon_label = "next minute" if h_val == 1 else f"average of the next **{h_val}** minutes"
+    st.markdown(
+        f"Drag the slider to step through the test set. At each step you see "
+        f"what the model predicted for the {horizon_label}, what persistence "
+        f"predicted (repeat last value), and what **actually happened**."
+    )
+
+    # ---- controls ----
+    ctrl1, ctrl2, _ = st.columns([1, 1, 4])
+    with ctrl1:
+        if st.button("◀ Prev", key=f"prev{h_val}"):
+            st.session_state[slider_key] = max(0, st.session_state[slider_key] - 1)
+    with ctrl2:
+        if st.button("Next ▶", key=f"next{h_val}"):
+            st.session_state[slider_key] = min(n_steps - 1, st.session_state[slider_key] + 1)
+
+    step = st.slider(
+        "Forecast Step", 0, n_steps - 1,
+        key=slider_key,
+    )
+
+    # ---- step chart ----
+    _render_step_chart(data, step, h_val)
+
+    # ---- per-step metrics ----
+    actual = data["pwr_true"][step]
+    model_pred = data["pwr_pred"][step]
+    persist_pred = data["pwr_persist"][step]
+    model_err = abs(model_pred - actual)
+    persist_err = abs(persist_pred - actual)
+    winner = "🟢 Transformer" if model_err < persist_err else "⚪ Persistence"
+
+    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1.metric("Actual", f"{actual:.4f} kW")
+    mc2.metric("Transformer Error", f"{model_err:.4f} kW")
+    mc3.metric("Persistence Error", f"{persist_err:.4f} kW")
+    mc4.metric("Winner This Step", winner)
+
+    # ---- running scoreboard ----
+    _render_scoreboard(data, step, h_val)
+
+
+def _render_step_chart(data, step_idx, h_val):
+    test_indices = data["test_indices"]
+    all_ts = data["all_timestamps"]
+    all_pwr = data["all_power"]
+    current_idx = int(test_indices[step_idx])
+
+    window_start = max(0, current_idx - 60)
+    zoom_start = max(0, window_start - 10)
+    zoom_end = min(len(all_ts), current_idx + 8)
+
+    actual = data["pwr_true"][step_idx]
+    model_pred = data["pwr_pred"][step_idx]
+    persist_pred = data["pwr_persist"][step_idx]
+    target_ts = all_ts[current_idx]
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=all_ts[zoom_start:zoom_end], y=all_pwr[zoom_start:zoom_end],
+        mode="lines", line=dict(color="rgba(180,180,180,0.45)", width=1),
+        name="Full series", showlegend=False,
+    ))
+
+    fig.add_vrect(
+        x0=all_ts[window_start], x1=all_ts[min(current_idx - 1, len(all_ts) - 1)],
+        fillcolor="rgba(31,119,180,0.07)", line=dict(color="rgba(31,119,180,0.25)", width=1),
+    )
+    fig.add_trace(go.Scatter(
+        x=all_ts[window_start:current_idx], y=all_pwr[window_start:current_idx],
+        mode="lines", line=dict(color="#1f77b4", width=2),
+        name="60-min lookback window",
+    ))
+
+    fig.add_vline(x=target_ts, line_dash="dash", line_color="#c86b72", line_width=1.5)
+
+    fig.add_trace(go.Scatter(
+        x=[target_ts], y=[model_pred],
+        mode="markers",
+        marker=dict(color="#00CC96", size=18, symbol="circle",
+                    line=dict(width=2, color="white")),
+        name=f"Transformer: {model_pred:.4f} kW",
+        hovertemplate=f"Transformer predicted {model_pred:.4f} kW<extra></extra>",
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=[target_ts], y=[persist_pred],
+        mode="markers",
+        marker=dict(color="#BDBDBD", size=16, symbol="diamond",
+                    line=dict(width=2, color="white")),
+        name=f"Persistence: {persist_pred:.4f} kW",
+        hovertemplate=f"Persistence predicted {persist_pred:.4f} kW<extra></extra>",
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=[target_ts], y=[actual],
+        mode="markers",
+        marker=dict(color="#EF553B", size=18, symbol="x-thin-open",
+                    line=dict(width=3, color="#EF553B")),
+        name=f"Actual: {actual:.4f} kW",
+        hovertemplate=f"Actual was {actual:.4f} kW<extra></extra>",
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=[target_ts, target_ts], y=[model_pred, actual],
+        mode="lines", line=dict(color="#00CC96", dash="dot", width=2),
+        showlegend=False,
+    ))
+    fig.add_trace(go.Scatter(
+        x=[target_ts, target_ts], y=[persist_pred, actual],
+        mode="lines", line=dict(color="#BDBDBD", dash="dot", width=2),
+        showlegend=False,
+    ))
+
+    model_err = abs(model_pred - actual)
+    persist_err = abs(persist_pred - actual)
+    fig.add_annotation(
+        x=target_ts, y=(model_pred + actual) / 2,
+        text=f"Δ {model_err:.4f}", showarrow=False,
+        font=dict(size=9, color="#00CC96"), xshift=45,
+    )
+    fig.add_annotation(
+        x=target_ts, y=(persist_pred + actual) / 2,
+        text=f"Δ {persist_err:.4f}", showarrow=False,
+        font=dict(size=9, color="#999"), xshift=-45,
+    )
+    fig.add_annotation(
+        x=target_ts, y=all_pwr[window_start:current_idx].max() * 1.02,
+        text="cutoff", showarrow=False,
+        font=dict(size=9, color="#c86b72"),
+    )
+
+    horizon_label = "next minute" if h_val == 1 else f"next {h_val}-min avg"
+    fig.update_layout(
+        height=440,
+        xaxis_title="Time", yaxis_title="Cluster Power (kW)",
+        hovermode="closest",
+        margin=dict(l=50, r=50, t=70, b=50),
+        legend=dict(x=0, y=1.0, orientation="h", traceorder="normal"),
+    )
+    fig.update_yaxes(tickformat=".3f")
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(f"**Step {step_idx + 1}** of {data['n_steps']} — predicting the {horizon_label}")
+
+
+def _render_scoreboard(data, step_idx, h_val):
+    pwr_true = data["pwr_true"][: step_idx + 1]
+    pwr_pred = data["pwr_pred"][: step_idx + 1]
+    pwr_persist = data["pwr_persist"][: step_idx + 1]
+
+    model_errs = np.abs(pwr_true - pwr_pred)
+    persist_errs = np.abs(pwr_true - pwr_persist)
+    wins = int(np.sum(model_errs < persist_errs))
+    total = step_idx + 1
+
+    cum_mae_m = float(np.mean(model_errs))
+    cum_mae_p = float(np.mean(persist_errs))
+
+    st.markdown(f"**Running Scoreboard** — Steps 1 to {total}")
+
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    sc1.metric("Model Wins", f"{wins} / {total}")
+    sc2.metric("Win Rate", f"{wins / total * 100:.0f}%")
+    sc3.metric("Cumul. Model MAE", f"{cum_mae_m:.4f} kW")
+    sc4.metric("Cumul. Persist MAE", f"{cum_mae_p:.4f} kW")
+
+    win_pct = wins / total * 100
+    fig_bar = go.Figure()
+    fig_bar.add_trace(go.Bar(
+        x=["Transformer", "Persistence"],
+        y=[wins, total - wins],
+        marker_color=["#00CC96", "#BDBDBD"],
+        text=[f"{wins} ({win_pct:.0f}%)", f"{total - wins} ({100 - win_pct:.0f}%)"],
+        textposition="auto",
+    ))
+    fig_bar.update_layout(
+        height=180, yaxis_title="Steps Won",
+        margin=dict(l=40, r=40, t=10, b=30),
+        showlegend=False,
+    )
+    st.plotly_chart(fig_bar, use_container_width=True)
+
+    if total > 2:
+        cum_m = np.cumsum(np.abs(data["pwr_true"][:total] - data["pwr_pred"][:total])) / np.arange(1, total + 1)
+        cum_p = np.cumsum(np.abs(data["pwr_true"][:total] - data["pwr_persist"][:total])) / np.arange(1, total + 1)
+        fig_cum = go.Figure()
+        fig_cum.add_trace(go.Scatter(
+            x=list(range(1, total + 1)), y=cum_m,
+            mode="lines", name="Transformer MAE",
+            line=dict(color="#00CC96", width=2),
+            fill="tozeroy", fillcolor="rgba(0,204,150,0.08)",
+        ))
+        fig_cum.add_trace(go.Scatter(
+            x=list(range(1, total + 1)), y=cum_p,
+            mode="lines", name="Persistence MAE",
+            line=dict(color="#BDBDBD", width=2, dash="dash"),
+        ))
+        fig_cum.update_layout(
+            height=200, xaxis_title="Steps Evaluated",
+            yaxis_title="Cumulative MAE (kW)",
+            margin=dict(l=40, r=40, t=10, b=30),
+            legend=dict(x=0.6, y=1.0, orientation="h"),
+        )
+        st.plotly_chart(fig_cum, use_container_width=True)
+
+
+# ===========================================================================
+# Page: ECS Realtime Physical Validation
+# ===========================================================================
+ECS_DIR = PROJECT_ROOT / "ecs-realtime"
+
+
+@st.cache_data(show_spinner="Loading ECS telemetry…")
+def _load_ecs_telemetry():
+    hw = pd.read_csv(ECS_DIR / "hardware_trace.csv")
+    qps = pd.read_csv(ECS_DIR / "qps_trace.csv")
+
+    hw["bin"] = (hw["time_absolute"] // 60) * 60
+    qps["bin"] = (qps["time_absolute"] // 60) * 60
+
+    bins = sorted(hw["bin"].unique())
+    df = pd.DataFrame({"bin": bins})
+
+    hw_grp = hw.groupby("bin")
+    df["gpu_util"] = hw_grp["gpu_util_perc"].mean().reindex(bins).values
+    df["gpu_mem_mb"] = hw_grp["gpu_mem_used_mb"].mean().reindex(bins).values
+    df["power_mean_w"] = hw_grp["power_draw_w"].mean().reindex(bins).values
+    df["power_actual_w"] = hw_grp["power_draw_w"].max().reindex(bins).values
+
+    qps_gen = qps[qps["request_type"] == "Generative Requests"].groupby("bin")["value"].sum()
+    df["qps_gen"] = qps_gen.reindex(bins, fill_value=0).values
+
+    df = df.ffill().bfill()
+    df["time_min"] = np.arange(len(df))
+    df["fan_power_w"] = 50 + 250 * (df["gpu_util"].values / 100.0)
+    df["gap_w"] = df["power_actual_w"] - df["fan_power_w"]
+
+    return df
+
+
+def page_ecs_realtime():
+    st.title("Bonus: Physical Validation on Alibaba Cloud ECS")
+    st.markdown(
+        "We ran **Stable Diffusion XL** inference workloads on a real Alibaba Cloud "
+        "GPU instance to validate whether the utilization-to-power translation holds "
+        "in the physical world. The results revealed a critical gap."
+    )
+
+    if not (ECS_DIR / "hardware_trace.csv").exists():
+        st.error("ECS telemetry files not found in `ecs-realtime/`. Run the experiment first.")
+        st.stop()
+
+    df = _load_ecs_telemetry()
+
+    # ---- Experiment overview ----
+    st.subheader("The Experiment")
+    ec1, ec2, ec3, ec4, ec5 = st.columns(5)
+    ec1.metric("Instance", "gn7i (A10)")
+    ec2.metric("Duration", f"{len(df)} min")
+    ec3.metric("Telemetry Points", "12,243")
+    ec4.metric("Avg GPU Util", f"{df['gpu_util'].mean():.1f}%")
+    ec5.metric("Avg Peak Power", f"{df['power_actual_w'].mean():.1f} W")
+
+    st.markdown(
+        "**Workflow:** A hardware monitor polled `nvidia-smi` every second while a "
+        "workload replayer generated Stable Diffusion images based on the GenTD26 "
+        "trace, simulating serverless cold starts during idle gaps."
+    )
+
+    # ---- Full telemetry overview ----
+    st.markdown("---")
+    st.subheader("📡 Full Experiment Telemetry")
+
+    from plotly.subplots import make_subplots
+
+    fig_overview = make_subplots(
+        rows=3, cols=1, shared_xaxes=True,
+        vertical_spacing=0.08,
+        subplot_titles=[
+            "GPU Utilization (%) — duty cycle from nvidia-smi",
+            "Peak Power Draw (Watts) — measured per minute",
+            "Generative Inference Requests (QPS)",
+        ],
+    )
+
+    fig_overview.add_trace(go.Scatter(
+        x=df["time_min"], y=df["gpu_util"],
+        mode="lines", name="GPU Utilization (%)",
+        line=dict(color="#1f77b4", width=1.5),
+        fill="tozeroy", fillcolor="rgba(31,119,180,0.06)",
+    ), row=1, col=1)
+
+    fig_overview.add_trace(go.Scatter(
+        x=df["time_min"], y=df["power_actual_w"],
+        mode="lines", name="Peak Power (nvidia-smi)",
+        line=dict(color="#EF553B", width=1.5),
+    ), row=2, col=1)
+
+    fig_overview.add_trace(go.Bar(
+        x=df["time_min"], y=df["qps_gen"],
+        name="Generative Requests",
+        marker_color="rgba(106,90,205,0.5)",
+    ), row=3, col=1)
+
+    fig_overview.update_layout(
+        height=500,
+        hovermode="x unified",
+        margin=dict(l=50, r=30, t=60, b=40),
+        legend=dict(x=0, y=-0.12, orientation="h"),
+    )
+    fig_overview.update_yaxes(title_text="Util %", range=[-5, 105], row=1, col=1)
+    active_pwr = df.loc[df["gpu_util"] > 5, "power_actual_w"]
+    pwr_lo = max(0, active_pwr.quantile(0.02) - 15) if len(active_pwr) > 0 else 0
+    pwr_hi = df["power_actual_w"].quantile(0.99) + 15
+    fig_overview.update_yaxes(title_text="Peak W", range=[pwr_lo, pwr_hi], row=2, col=1)
+    fig_overview.update_yaxes(title_text="Requests", row=3, col=1)
+    fig_overview.update_xaxes(title_text="Experiment Minute", row=3, col=1)
+
+    st.plotly_chart(fig_overview, use_container_width=True)
+
+    # ---- The Physical Reality Gap ----
+    st.markdown("---")
+    st.subheader("⚡ The Physical Reality Gap")
+    st.markdown(
+        "The **Fan et al. (2007)** power model (`P = 50 + 250 × util`) is the "
+        "standard formula used in Chapters 1 and 2 to translate predicted utilization "
+        "into cluster power. But on real hardware, this formula **consistently "
+        "underestimates** the actual peak power draw during GenAI inference."
+    )
+
+    avg_actual = df["power_actual_w"].mean()
+    avg_fan = df["fan_power_w"].mean()
+    avg_gap = df["gap_w"].mean()
+    gap_pct = avg_gap / avg_actual * 100
+
+    gc1, gc2, gc3, gc4 = st.columns(4)
+    gc1.metric("Avg Peak Power", f"{avg_actual:.0f} W")
+    gc2.metric("Fan et al. Estimate", f"{avg_fan:.0f} W")
+    gc3.metric("Unmodeled Gap", f"+{avg_gap:.0f} W", delta=f"{gap_pct:.0f}% of actual")
+    gc4.metric("MAE (Fan model)", f"{np.mean(np.abs(df['gap_w'])):.0f} W")
+
+    # Fit an optimal power model inline for the comparison line
+    from sklearn.linear_model import LinearRegression
+    util_frac = (df["gpu_util"].values / 100.0).reshape(-1, 1)
+    lr = LinearRegression().fit(util_frac, df["power_actual_w"].values)
+    fit_intercept = float(lr.intercept_)
+    fit_coef = float(lr.coef_[0])
+    fit_power = fit_intercept + fit_coef * (df["gpu_util"].values / 100.0)
+
+    fan_mae = float(np.mean(np.abs(df["power_actual_w"] - df["fan_power_w"])))
+    fit_mae = float(np.mean(np.abs(df["power_actual_w"] - fit_power)))
+
+    # Tight y-axis: start below Fan et al. to show both lines and the gap
+    y_min = max(0, df["fan_power_w"].quantile(0.05) - 30)
+    y_max = df["power_actual_w"].quantile(0.98) + 15
+
+    fig_gap = go.Figure()
+    fig_gap.add_trace(go.Scatter(
+        x=df["time_min"], y=df["power_actual_w"],
+        mode="lines", name="Actual Peak Power (nvidia-smi)",
+        line=dict(color="black", width=2.5),
+    ))
+    fig_gap.add_trace(go.Scatter(
+        x=df["time_min"], y=df["fan_power_w"],
+        mode="lines", name=f"Fan et al. (50 + 250×util) — MAE {fan_mae:.0f}W",
+        line=dict(color="#FFA15A", width=2, dash="dash"),
+    ))
+    fig_gap.add_trace(go.Scatter(
+        x=df["time_min"], y=fit_power,
+        mode="lines", name=f"Fitted ({fit_intercept:.0f} + {fit_coef:.0f}×util) — MAE {fit_mae:.0f}W",
+        line=dict(color="#00CC96", width=2),
+    ))
+    fig_gap.add_trace(go.Scatter(
+        x=df["time_min"], y=df["power_actual_w"],
+        fill="tonexty", fillcolor="rgba(239,85,59,0.12)",
+        mode="none", showlegend=False,
+    ))
+    fig_gap.update_layout(
+        height=400,
+        xaxis_title="Experiment Minute",
+        yaxis_title="Power (Watts)",
+        yaxis=dict(range=[y_min, y_max]),
+        hovermode="x unified",
+        margin=dict(l=50, r=50, t=60, b=50),
+    )
+    st.plotly_chart(fig_gap, use_container_width=True)
+
+    st.info(
+        "**Why the gap?** The Fan et al. formula only accounts for "
+        "utilization-proportional power. But real hardware draws additional power "
+        "from VRAM bandwidth saturation, PCIe link activity, voltage regulator "
+        "inefficiency, and transient spikes that `nvidia-smi` captures at 1-second "
+        "resolution — none of which are reflected in a duty-cycle percentage. "
+        f"A fitted linear model (`{fit_intercept:.0f} + {fit_coef:.0f}×util`) "
+        f"closes the gap (MAE {fit_mae:.0f}W vs {fan_mae:.0f}W), confirming the "
+        "standard formula's parameters don't transfer to serverless GenAI workloads.",
+        icon="💡",
+    )
 
 
 def page_train_and_evaluate():

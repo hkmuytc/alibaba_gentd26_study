@@ -18,6 +18,7 @@ class Page(str, Enum):
     # TRAIN_EVALUATE   = "Train & Evaluate"
     ONE_STEP         = "Chapter 1: One-Step Anticipation"
     MULTI_STEP       = "Chapter 2: Multi-Step Averaging"
+    ECS_REALTIME     = "Bonus: Physical Validation (ECS)"
     # SYMBOLIC         = "Symbolic Regression"
     # TRANSFER         = "Transfer Learning"
 
