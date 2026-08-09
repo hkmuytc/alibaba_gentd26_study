@@ -1,18 +1,3 @@
-"""
-Data pipeline v2: from raw Alibaba GenTD26 traces to model-ready tensors.
-
-Design decisions:
-  1. 1-minute bins (native ~57s sampling) → ~1090 samples
-  2. Active-pod ratio as a first-class feature (r=0.90 with GPU util)
-  3. Lag features use shift(1) and shift(2) to reference prior timesteps;
-     rolling statistics include the current row (no additional shift needed
-     because build_windows already excludes the target row from inputs)
-  4. Fractional differencing (d=0.3) as an additional feature
-  5. 3-way temporal split: train 70% / val 15% / test 15%
-  6. Residual prediction: model outputs Δ from last observed value
-  7. Power = GPU only (Fan et al. 2007); memory is a near-constant offset
-"""
-
 import numpy as np
 import pandas as pd
 import torch
@@ -72,7 +57,7 @@ def aggregate_to_cluster(gpu, gmem, qps, bin_sec=60):
     df["qps_gen"] = qps_gen.reindex(common_bins)
     df["qps_api"] = qps_api.reindex(common_bins, fill_value=0)
 
-    df = df.ffill().bfill()
+    df = df.ffill()
     return df
 
 
@@ -131,12 +116,18 @@ def engineer_features(df):
     return out
 
 
-def estimate_power_kw(gpu_util_frac, active_pod_ratio, n_gpus):
+def estimate_power_kw(gpu_util_frac, active_pod_ratio_or_n_gpus, n_gpus=None):
     """
-    GPU-only power estimation (Fan et al. 2007).
+    Strict GPU-only power estimation (Fan et al. 2007).
     Memory power is a near-constant ~2.7 kW offset (std < 0.04 kW) and is omitted.
+
+    Active-pod ratio may be passed by older call sites, but is intentionally ignored:
+    cluster-mean GPU utilization already includes idle pods in the dynamic term, while
+    the idle term belongs to every powered GPU.
     """
-    return n_gpus * (GPU_IDLE_W + (GPU_MAX_W - GPU_IDLE_W) * gpu_util_frac * active_pod_ratio) / 1000
+    if n_gpus is None:
+        n_gpus = active_pod_ratio_or_n_gpus
+    return n_gpus * (GPU_IDLE_W + (GPU_MAX_W - GPU_IDLE_W) * gpu_util_frac) / 1000
 
 
 class TimeSeriesDataset(Dataset):

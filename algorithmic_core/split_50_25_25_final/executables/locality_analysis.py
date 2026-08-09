@@ -5,13 +5,13 @@ Locality analysis for multi-step averaged power forecasting.
 Answers: "Under what temporal regimes does the model's power prediction
 improvement over persistence emerge or break down?"
 
-Focus: h=12 (representative medium-range horizon), power domain (kW).
+Focus: h=15 (representative medium-range horizon), power domain (kW).
 
 Figures:
   1. Power error growth across horizons (overview)
-  2. Per-sample power advantage at h=12 (when does the model win?)
-  3. Power error by data regime at h=12 (quantified breakdown)
-  4. Best/worst prediction cases at h=12 (qualitative examples)
+    2. Per-sample power advantage at h=15 (when does the model win?)
+    3. Power error by data regime at h=15 (quantified breakdown)
+    4. Best/worst prediction cases at h=15 (qualitative examples)
 """
 
 import sys
@@ -20,6 +20,8 @@ import torch
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 from pathlib import Path
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import Dataset, DataLoader
@@ -35,13 +37,14 @@ SEED = 0
 WINDOW = 60
 TRAIN_R, VAL_R = 0.50, 0.25
 HORIZONS = [1, 2, 3, 5, 8, 10, 12, 15, 18, 20, 24]
-H_FOCUS = 12
+H_FOCUS = 15
 
 plt.rcParams.update({
     "figure.dpi": 200, "savefig.dpi": 200,
-    "font.size": 10, "font.family": "serif",
-    "axes.titlesize": 12, "axes.labelsize": 11, "legend.fontsize": 9,
-    "xtick.labelsize": 9, "ytick.labelsize": 9,
+    "font.size": 14, "font.family": "serif",
+    "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
+    "axes.titlesize": 16, "axes.labelsize": 15, "legend.fontsize": 13,
+    "xtick.labelsize": 12, "ytick.labelsize": 12,
     "figure.facecolor": "white", "axes.facecolor": "#fafafa",
     "axes.edgecolor": "#cccccc", "axes.grid": True, "grid.alpha": 0.25,
     "axes.spines.top": False, "axes.spines.right": False,
@@ -58,7 +61,7 @@ def main():
     print("\nGenerating figures...")
     fig_power_error_growth(results, feat, n_gpus)
     fig_per_sample_advantage(results, power_kw)
-    fig_best_worst(results, y_all, gpu_roc, gpu_vol, power_kw, n_gpus)
+    fig_best_worst(results, feat, y_all, gpu_roc, gpu_vol, power_kw, n_gpus)
 
     # Print summary statistics for discussion
     res = results[H_FOCUS]
@@ -196,8 +199,7 @@ def add_power_errors(res, feat_df, n_gpus, horizon):
     prev_idx = [i - 1 for i in idx]
     apr_pred = apr[prev_idx]
 
-    # Ground truth: average of instantaneous power over the horizon
-    # This correctly accounts for E[gpu*apr] ≠ E[gpu]*E[apr] when correlated
+    # Ground truth: average of instantaneous strict Fan power over the horizon.
     all_true_power = estimate_power_kw(
         feat_df["gpu_util"].values, feat_df["active_pod_ratio"].values, n_gpus)
     true_kw = np.array([np.mean(all_true_power[i:i + horizon]) for i in idx])
@@ -216,7 +218,8 @@ def run_all():
     gpu, gmem, qps = load_raw_signals()
     agg = aggregate_to_cluster(gpu, gmem, qps, bin_sec=60)
     feat = engineer_features(agg)
-    n_gpus = int(agg.iloc[:int(len(agg) * TRAIN_R)]["gpu_n_pods"].median())
+    train_idx = feat.index[:int(len(feat) * TRAIN_R)]
+    n_gpus = int(agg.loc[train_idx, "gpu_n_pods"].median())
     feat["power_kw"] = estimate_power_kw(
         feat["gpu_util"].values, feat["active_pod_ratio"].values, n_gpus)
     model_df = feat.drop(columns=["power_kw"])
@@ -370,8 +373,7 @@ def fig_power_error_growth(results, feat_df, n_gpus):
     ax1.fill_between(horizons, model_maes, persist_maes, alpha=0.15, color="#2E7D32",
                      where=[m < p for m, p in zip(model_maes, persist_maes)])
     ax1.set_ylabel("Power MAE (kW)")
-    ax1.set_title("Multi-Step Window-Averaged Power Prediction Across Forecast Horizons\n"
-                  "(50/25/25 Split, Transformer, w=60)")
+    ax1.set_title("Multi-Step Power Forecast (50/25/25, Transformer, w=60)")
     ax1.legend(loc="upper left")
 
     # Panel 2: Improvement (stem plot to avoid bar overlap at close horizons)
@@ -380,8 +382,6 @@ def fig_power_error_growth(results, feat_df, n_gpus):
     for h, imp, c in zip(horizons, improvements, colors):
         ax2.plot([h, h], [0, imp], color=c, lw=2)
         ax2.plot(h, imp, "o", color=c, ms=6)
-        ax2.text(h, imp + (1.5 if imp > 0 else -3.5), f"{imp:+.0f}%",
-                ha="center", va="bottom" if imp > 0 else "top", fontsize=7)
     ax2.set_ylabel("MAE Improvement (%)")
 
     # Panel 3: R²
@@ -399,11 +399,11 @@ def fig_power_error_growth(results, feat_df, n_gpus):
 
 
 # =====================================================================
-# FIGURE 2: Per-sample power advantage at h=12 (combined view)
+# FIGURE 2: Per-sample power advantage at h=15 (combined view)
 # =====================================================================
 
 def fig_per_sample_advantage(results, power_kw):
-    print("[Fig 2] Per-sample power advantage at h=12...")
+    print(f"[Fig 2] Per-sample power advantage at h={H_FOCUS}...")
     res = results[H_FOCUS]
     idx = res["test_idx"]
     advantage = res["pwr_advantage"]  # persist_err - model_err; positive = model wins
@@ -415,7 +415,7 @@ def fig_per_sample_advantage(results, power_kw):
     ax2 = ax.twinx()
     ax2.fill_between(t, power_kw[idx], alpha=0.07, color="#1565C0")
     ax2.plot(t, power_kw[idx], color="#1565C0", lw=0.6, alpha=0.35, label="Power (kW)")
-    ax2.set_ylabel("Cluster Power (kW)", color="#1565C0", fontsize=9)
+    ax2.set_ylabel("Power (kW)", color="#1565C0")
     ax2.tick_params(axis="y", labelcolor="#1565C0", labelsize=8)
 
     # Foreground: advantage as colored bars from zero
@@ -429,18 +429,21 @@ def fig_per_sample_advantage(results, power_kw):
     ax.plot(t, smooth, color="#E65100", lw=2.5, label=f"Rolling avg ({rw}-sample)")
     ax.axhline(y=0, color="black", lw=0.8)
 
-    ax.set_ylabel("Power Advantage over Persistence (kW)", fontsize=10)
+    ax.set_ylabel("Advantage over Persistence (kW)")
     ax.set_xlabel("Test Sample Index")
 
     wins = int(np.sum(advantage > 0))
     total = len(advantage)
     mean_adv = float(np.mean(advantage))
     ax.set_title(
-        f"Per-Sample Power Prediction Advantage at h={H_FOCUS} min (50/25/25)\n"
-        f"Green bars = model outperforms persistence  |  Red bars = persistence outperforms  |  "
-        f"Model wins {wins}/{total} samples, mean advantage {mean_adv:+.4f} kW",
-        fontsize=11)
-    ax.legend(loc="upper left", fontsize=8, framealpha=0.9)
+        f"Per-Sample Advantage at h={H_FOCUS} (wins {wins}/{total}, mean {mean_adv:+.4f} kW)")
+    legend_handles = [
+        Patch(facecolor="#2E7D32", alpha=0.5, label="Model better"),
+        Patch(facecolor="#C62828", alpha=0.5, label="Persistence better"),
+        Line2D([0], [0], color="#E65100", lw=2.5, label="Rolling average"),
+        Line2D([0], [0], color="#1565C0", lw=0.8, alpha=0.5, label="Power"),
+    ]
+    ax.legend(handles=legend_handles, loc="upper left", ncol=2, framealpha=0.9)
 
     fig.tight_layout()
     fig.savefig(R / "fig_locality_per_sample_advantage.png", bbox_inches="tight")
@@ -449,11 +452,11 @@ def fig_per_sample_advantage(results, power_kw):
 
 
 # =====================================================================
-# FIGURE 3: Best/worst cases at h=12 (ranked by model advantage)
+# FIGURE 3: Best/worst cases at h=15 (ranked by model advantage)
 # =====================================================================
 
-def fig_best_worst(results, y_all, gpu_roc, gpu_vol, power_kw, n_gpus):
-    print("[Fig 3] Best/worst cases at h=12...")
+def fig_best_worst(results, feat, y_all, gpu_roc, gpu_vol, power_kw, n_gpus):
+    print(f"[Fig 3] Best/worst cases at h={H_FOCUS}...")
     res = results[H_FOCUS]
     idx = res["test_idx"]
     advantage = res["pwr_advantage"]  # persist_err - model_err
@@ -475,7 +478,7 @@ def fig_best_worst(results, y_all, gpu_roc, gpu_vol, power_kw, n_gpus):
             global_idx = idx[local_idx]
             pred_time = global_idx - 1
 
-            # Context: 40 min before prediction + h=12 future + 5 min after
+            # Context: 40 min before prediction + future horizon + 5 min after
             ctx_start = max(0, pred_time - 40)
             ctx_end = min(len(y_all), global_idx + H_FOCUS + 5)
             t_ctx = np.arange(ctx_start, ctx_end)
@@ -523,30 +526,27 @@ def fig_best_worst(results, y_all, gpu_roc, gpu_vol, power_kw, n_gpus):
 
             trend_label = "Rising" if trend_5 > 0.01 else ("Falling" if trend_5 < -0.01 else "Stable")
             annotation = (f"Trend: {trend_label} (Δ₅={trend_5:+.3f})\n"
-                          f"GPU={gpu_level:.3f}  σ₁₅={vol:.3f}\n"
-                          f"Model err={m_err:.4f} kW\n"
-                          f"Persist err={p_err:.4f} kW\n"
-                          f"Advantage={adv:+.4f} kW")
+                          f"σ₁₅={vol:.3f}\n"
+                          f"Err: model={m_err:.3f}, persist={p_err:.3f}\n"
+                          f"Adv={adv:+.3f} kW")
 
-            ax.text(0.02, 0.97, annotation, transform=ax.transAxes, fontsize=6.5,
+            ax.text(0.02, 0.97, annotation, transform=ax.transAxes, fontsize=12,
                     va="top", ha="left", family="monospace",
                     bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
                               alpha=0.85, edgecolor="#ccc"))
 
             is_best = ci < 3
             color = "#2E7D32" if is_best else "#C62828"
-            ax.set_title(f"{label}: advantage={adv:+.4f} kW", fontsize=10,
+            ax.set_title(f"{label}: {adv:+.3f} kW",
                         color=color, fontweight="bold")
             ax.set_xlabel("Time index")
             ax.set_ylabel("Power (kW)")
             if row == 0 and col == 0:
-                ax.legend(fontsize=5.5, loc="lower left", framealpha=0.8)
+                ax.legend(loc="lower left", framealpha=0.8)
 
     fig.suptitle(
-        f"Where the Model Outperforms vs Underperforms Persistence at h={H_FOCUS} min\n"
-        f"Ranked by advantage = |persist error| − |model error|  "
-        f"(positive = model better, negative = persistence better)",
-        fontsize=12, y=1.01)
+        f"Best and Worst h={H_FOCUS} Cases by Advantage",
+        fontsize=16, y=1.01)
     fig.tight_layout()
     fig.savefig(R / "fig_locality_best_worst.png", bbox_inches="tight")
     plt.close(fig)
@@ -565,12 +565,12 @@ def _write_locality_table(results, y_all, gpu_vol, regimes):
     advantage = res["pwr_advantage"]
 
     lines = []
-    lines.append(f"## Locality Analysis: Power Prediction at h={H_FOCUS}")
+    lines.append(f"# Locality Analysis: Power Prediction at h={H_FOCUS}")
     lines.append("")
     lines.append(f"**Configuration**: 50/25/25 split, w=60, Transformer, h={H_FOCUS}")
     lines.append(f"**Advantage** = |persistence error| − |model error| (positive = model better)")
     lines.append("")
-    lines.append("### By Workload Volatility (15-min rolling σ)")
+    lines.append("## By Workload Volatility (15-min rolling σ)")
     lines.append("")
     lines.append("| Regime | Samples | Model Win Rate | Mean Advantage (kW) |")
     lines.append("| --- | ---: | ---: | ---: |")
@@ -578,9 +578,10 @@ def _write_locality_table(results, y_all, gpu_vol, regimes):
         if mask.sum() > 0:
             wr = np.mean(advantage[mask] > 0) * 100
             ma = np.mean(advantage[mask])
-            lines.append(f"| {name} | {mask.sum()} | {wr:.1f}% | {ma:+.4f} |")
+            safe_name = name.replace("|", "\\|")
+            lines.append(f"| {safe_name} | {mask.sum()} | {wr:.1f}% | {ma:+.4f} |")
     lines.append("")
-    lines.append("### By Workload Trend (Δ over 5 min)")
+    lines.append("## By Workload Trend (Δ over 5 min)")
     lines.append("")
     lines.append("| Regime | Samples | Model Win Rate | Mean Advantage (kW) |")
     lines.append("| --- | ---: | ---: | ---: |")
@@ -588,9 +589,10 @@ def _write_locality_table(results, y_all, gpu_vol, regimes):
         if mask.sum() > 0:
             wr = np.mean(advantage[mask] > 0) * 100
             ma = np.mean(advantage[mask])
-            lines.append(f"| {name} | {mask.sum()} | {wr:.1f}% | {ma:+.4f} |")
+            safe_name = name.replace("|", "\\|")
+            lines.append(f"| {safe_name} | {mask.sum()} | {wr:.1f}% | {ma:+.4f} |")
     lines.append("")
-    lines.append("### Overall")
+    lines.append("## Overall")
     lines.append("")
     lines.append(f"| Metric | Value |")
     lines.append(f"| --- | --- |")

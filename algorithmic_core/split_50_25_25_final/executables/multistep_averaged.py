@@ -125,12 +125,12 @@ def _write_multistep_table(all_results):
         return
 
     lines = []
-    lines.append("## Multi-Step Window-Averaged Power Prediction Results")
+    lines.append("# Multi-Step Window-Averaged Power Prediction Results")
     lines.append("")
     lines.append("**Configuration**: 50/25/25 split, w=60, Transformer, residual prediction")
     lines.append("**Target**: mean(y[t+1..t+h]) — average GPU utilization over next h minutes")
     lines.append("**Persistence baseline**: y[t] — current value")
-    lines.append("**Power**: estimated via Fan et al. (2007), active pod ratio held at last known value")
+    lines.append("**Power**: strict Fan et al. utilization-to-power conversion; active-pod ratio is not used")
     lines.append("")
     lines.append("| h (min) | Model Power MAE (kW) | Persist Power MAE (kW) | Improvement | Model Power R² | Persist Power R² | Model Wins |")
     lines.append("| ---: | ---: | ---: | ---: | ---: | ---: | --- |")
@@ -145,7 +145,7 @@ def _write_multistep_table(all_results):
 
     wins_total = sum(1 for h in split.values() if h["model_wins_power"])
     lines.append("")
-    lines.append(f"**Model wins: {wins_total}/{len(split)} horizons (power MAE)**")
+    lines.append(f"## Model wins: {wins_total}/{len(split)} horizons (power MAE)")
 
     (R / "multistep_power_table.md").write_text("\n".join(lines) + "\n")
     print(f"\n  → multistep_power_table.md")
@@ -171,7 +171,8 @@ def run_all():
     for train_r, val_r in SPLITS:
         label = f"{int(train_r*100)}/{int(val_r*100)}/{int((1-train_r-val_r)*100)}"
         cache_label = f"{int(train_r*100)}-{int(val_r*100)}-{int((1-train_r-val_r)*100)}"
-        n_gpus = int(agg.iloc[:int(len(agg) * train_r)]["gpu_n_pods"].median())
+        train_idx = feat.index[:int(len(feat) * train_r)]
+        n_gpus = int(agg.loc[train_idx, "gpu_n_pods"].median())
         all_results[label] = {}
         print(f"\n{'='*60}")
         print(f"  Split: {label}")
@@ -235,8 +236,7 @@ def run_all():
             prev_indices = [i - 1 for i in test_indices]
             apr_pred = feat["active_pod_ratio"].values[prev_indices]
 
-            # Ground truth: average of instantaneous power over the horizon
-            # This correctly accounts for E[gpu*apr] ≠ E[gpu]*E[apr] when correlated
+            # Ground truth: average of instantaneous strict Fan power over the horizon.
             all_true_power = estimate_power_kw(
                 feat["gpu_util"].values, feat["active_pod_ratio"].values, n_gpus)
             true_kw = np.array([np.mean(all_true_power[i:i + h]) for i in test_indices])

@@ -26,6 +26,17 @@ import joblib
 from pathlib import Path
 
 
+def _json_safe(value):
+    """Convert numpy scalar metrics to plain JSON values."""
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if hasattr(value, "item"):
+        return value.item()
+    return value
+
+
 class ModelCache:
     def __init__(self, cache_dir):
         self.cache_dir = Path(cache_dir)
@@ -43,8 +54,11 @@ class ModelCache:
     def _load_meta(self):
         p = self._meta_path()
         if p.exists():
-            with open(p) as f:
-                return json.load(f)
+            try:
+                with open(p) as f:
+                    return json.load(f)
+            except json.JSONDecodeError:
+                return {}
         return {}
 
     def _save_meta(self, meta):
@@ -57,7 +71,7 @@ class ModelCache:
         joblib.dump(scalers, self._scaler_path(name))
 
         meta = self._load_meta()
-        meta[name] = metrics
+        meta[name] = _json_safe(metrics)
         self._save_meta(meta)
 
     def load(self, name, model):
@@ -73,7 +87,7 @@ class ModelCache:
 
         model.load_state_dict(torch.load(model_path, map_location="cpu", weights_only=True))
         scalers = joblib.load(scaler_path)
-        return model, scalers, meta[name]
+        return model, scalers, meta.get(name, {})
 
     def is_better(self, name, new_metric, key="mae", lower_is_better=True):
         """Check if new_metric is better than the cached metric."""

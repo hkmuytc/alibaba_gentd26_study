@@ -5,10 +5,11 @@ import torch
 import joblib
 from pathlib import Path
 
-# Add the root directory to path so we can import the pipeline
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from algorithmic_core.split_50_25_25_final_corrected.core.pipeline import engineer_features, estimate_power_kw
-from algorithmic_core.split_50_25_25_final_corrected.core.models import TransformerForecaster
+# Add the experiment directory to path so we can import its core modules
+_split_dir = Path(__file__).resolve().parent.parent / "algorithmic_core" / "split_50_25_25_final"
+sys.path.insert(0, str(_split_dir))
+from core.pipeline import engineer_features, estimate_power_kw
+from core.models import TransformerForecaster
 
 def process_physical_data(hw_path, qps_path, offset_minutes=600):
     """
@@ -43,10 +44,6 @@ def process_physical_data(hw_path, qps_path, offset_minutes=600):
 
     df = df.ffill().fillna(0.0)
     
-    # 2.5 CRITICAL FIX: The fractional differencing in your pipeline requires 
-    # a minimum of 50 minutes (max_lag=50) of historical data to produce any output.
-    # We must pad the beginning with 50 minutes of idle data so that your 
-    # ENTIRE physical telemetry run survives the .dropna() step in engineer_features!
     pad_size = 50
     pad_idx = [df.index[0] - (i * 60) for i in range(pad_size, 0, -1)]
     pad_df = pd.DataFrame(index=pad_idx, columns=df.columns)
@@ -62,10 +59,9 @@ def process_physical_data(hw_path, qps_path, offset_minutes=600):
     df = pd.concat([pad_df, df])
     common_bins = df.index.tolist()
     
-    # 3. CRITICAL STEP: Adjust the time index for the Sine/Cosine embeddings
+    # 3. Adjust the time index for the Sine/Cosine embeddings
     # df.index is currently Unix absolute time (e.g., 1700000000). 
     # The pipeline calculates: minutes = (df.index - df.index[0]) / 60
-    # We must trick df.index so it acts like it started 600 minutes into the trace.
     start_unix = df.index[0]
     df.index = df.index - start_unix + (offset_minutes * 60)
     
@@ -86,7 +82,7 @@ def evaluate(features_df, actual_power):
     print(f"\nReady for Inference! Shape: {features_df.shape}")
     
     # 1. Paths to your locally cached model assets
-    exp_dir = Path(__file__).resolve().parent.parent / "algorithmic_core" / "split_50_25_25_final_corrected"
+    exp_dir = Path(__file__).resolve().parent.parent / "algorithmic_core" / "split_50_25_25_final"
     models_dir = exp_dir / "models" / "onestep"
     
     window_size = 60  # Aligning to w30 model

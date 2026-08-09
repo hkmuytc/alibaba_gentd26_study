@@ -35,7 +35,7 @@ SEED = 0
 WINDOW = 60
 TRAIN_R, VAL_R = 0.70, 0.15
 HORIZONS = [1, 2, 3, 5, 8, 10, 12, 15, 18, 20, 24]
-H_FOCUS = 12
+H_FOCUS = 15
 
 plt.rcParams.update({
     "figure.dpi": 200, "savefig.dpi": 200,
@@ -58,7 +58,7 @@ def main():
     print("\nGenerating figures...")
     fig_power_error_growth(results, feat, n_gpus)
     fig_per_sample_advantage(results, power_kw)
-    fig_best_worst(results, y_all, gpu_roc, gpu_vol, power_kw, n_gpus)
+    fig_best_worst(results, feat, y_all, gpu_roc, gpu_vol, power_kw, n_gpus)
 
     # Print summary statistics for discussion
     res = results[H_FOCUS]
@@ -452,7 +452,7 @@ def fig_per_sample_advantage(results, power_kw):
 # FIGURE 3: Best/worst cases at h=12 (ranked by model advantage)
 # =====================================================================
 
-def fig_best_worst(results, y_all, gpu_roc, gpu_vol, power_kw, n_gpus):
+def fig_best_worst(results, feat, y_all, gpu_roc, gpu_vol, power_kw, n_gpus):
     print("[Fig 3] Best/worst cases at h=12...")
     res = results[H_FOCUS]
     idx = res["test_idx"]

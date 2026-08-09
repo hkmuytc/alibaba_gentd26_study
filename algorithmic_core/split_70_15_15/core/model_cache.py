@@ -1,24 +1,3 @@
-"""
-Model cache: save, load, and compare trained models with their scalers and metrics.
-
-Usage:
-    from model_cache import ModelCache
-
-    cache = ModelCache("models/onestep")
-
-    # Try loading
-    cached = cache.load("transformer_w60_70-15-15")
-    if cached is not None:
-        model, scalers, meta = cached
-    else:
-        # Train...
-        cache.save("transformer_w60_70-15-15", model, scalers, {"mae": 0.028, "r2": 0.89})
-
-    # Compare: returns True if new is better
-    if cache.is_better("transformer_w60_70-15-15", new_metric=0.027, key="mae"):
-        # overwrite results
-"""
-
 import hashlib
 import json
 import torch
@@ -48,8 +27,22 @@ class ModelCache:
         return {}
 
     def _save_meta(self, meta):
+        # Convert numpy types to Python native types for JSON serialization
+        def convert(obj):
+            import numpy as np
+            if isinstance(obj, (np.float32, np.float64)):
+                return float(obj)
+            elif isinstance(obj, (np.int32, np.int64)):
+                return int(obj)
+            elif isinstance(obj, dict):
+                return {k: convert(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert(v) for v in obj]
+            return obj
+        
+        meta_converted = convert(meta)
         with open(self._meta_path(), "w") as f:
-            json.dump(meta, f, indent=2)
+            json.dump(meta_converted, f, indent=2)
 
     def save(self, name, model, scalers, metrics):
         """Save model weights, scalers, and metrics."""

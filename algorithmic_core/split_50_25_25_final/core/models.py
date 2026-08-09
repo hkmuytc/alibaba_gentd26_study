@@ -1,12 +1,3 @@
-"""
-Model architectures v2.
-
-Design principles:
-  - Smaller capacity than v1 (hidden_dim=32, 1 layer) to avoid overfitting on ~700 training samples
-  - All models accept (batch, seq_len, input_dim) → scalar prediction
-  - When residual_mode=True, the output is a delta from the last observed value
-"""
-
 import math
 import torch
 import torch.nn as nn

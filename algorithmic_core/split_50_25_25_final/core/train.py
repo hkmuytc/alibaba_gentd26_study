@@ -1,14 +1,3 @@
-"""
-Training loop v2.
-
-Key improvements over v1:
-  - Separate validation set for early stopping (no test-set leakage)
-  - Huber loss (SmoothL1) for robustness to workload bursts
-  - Cosine annealing LR schedule with warm restarts
-  - Proper residual → level reconstruction for metrics
-  - Linear regression and persistence baselines computed alongside
-"""
-
 import numpy as np
 import torch
 import torch.nn as nn

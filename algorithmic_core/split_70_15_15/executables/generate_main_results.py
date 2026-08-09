@@ -59,10 +59,15 @@ def main():
           f"Δ R²: {m_gpu['R2']-p_gpu['R2']:+.4f}\n")
 
     m_power, p_power = fig_power_overlay(data, feat, n_gpus, model)
-    write_power_table(m_power, p_power)
-
+    
     # Ablation: full transformer vs history-only vs persistence
-    run_ablation(data, feat, n_gpus, m_power, p_power)
+    gpu_power, pred_kw_full, pred_kw_gpu, true_kw, persist_kw = run_ablation(data, feat, n_gpus, m_power, p_power)
+    
+    # Write combined power + ablation table
+    write_power_table(m_power, p_power, gpu_power)
+    
+    # Generate ablation figure
+    fig_ablation(pred_kw_full, pred_kw_gpu, true_kw, persist_kw, m_power, gpu_power, p_power)
 
     print("\nAll results generated.")
 
@@ -115,7 +120,8 @@ def _eval_ablation_model(model_name, data, feat, n_gpus):
 
 
 def run_ablation(data, feat, n_gpus, m_power, p_power):
-    """Ablation: full Transformer vs GPU-only Transformer vs persistence."""
+    """Ablation: full Transformer vs GPU-only Transformer vs persistence.
+    Returns gpu_power metrics for combined table."""
     print(f"\n  Running ablation study...")
 
     # Full model predictions
@@ -142,66 +148,7 @@ def run_ablation(data, feat, n_gpus, m_power, p_power):
     pred_kw_gpu, true_kw, gpu_power = _eval_ablation_model("transformer_hist", data, feat, n_gpus)
     print(f"  History-only — Power MAE={gpu_power['MAE']:.4f} kW, R²={gpu_power['R2']:.4f}")
 
-    # --- Ablation table ---
-    full_imp = (p_power["MAE"] - m_power["MAE"]) / p_power["MAE"] * 100
-    gpu_imp = (p_power["MAE"] - gpu_power["MAE"]) / p_power["MAE"] * 100
-    lines = [
-        "## Ablation Study: Exogenous Workload Telemetry Contribution",
-        "",
-        f"**Configuration**: 70/15/15 split, w={WINDOW}, seed={SEED}",
-        "**Full model**: 27 features (GPU utilization and derived statistics + exogenous workload telemetry)",
-        "**History-only model**: 10 features (GPU utilization, lags, rolling means/stds, rate of change, fractional differencing — no QPS, pod ratios, memory, or time-of-day)",
-        "**Persistence**: predict current value for all future steps",
-        "",
-        "| Model | Features | Power MAE (kW) | Power R² | vs Persistence MAE | vs Persistence R² |",
-        "| --- | ---: | ---: | ---: | ---: | ---: |",
-        f"| **Transformer (full)** | 27 | **{m_power['MAE']:.4f}** | **{m_power['R2']:.4f}** "
-        f"| **{full_imp:+.1f}%** | **{m_power['R2'] - p_power['R2']:+.4f}** |",
-        f"| Transformer (history only) | 10 | {gpu_power['MAE']:.4f} | {gpu_power['R2']:.4f} "
-        f"| {gpu_imp:+.1f}% | {gpu_power['R2'] - p_power['R2']:+.4f} |",
-        f"| Persistence | — | {p_power['MAE']:.4f} | {p_power['R2']:.4f} | — | — |",
-        "",
-    ]
-    (R / "ablation_table.md").write_text("\n".join(lines))
-    print(f"  → ablation_table.md")
-
-    # --- Ablation figure: time-series overlay ---
-    import pandas as pd
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8),
-                                    gridspec_kw={"height_ratios": [3, 1]}, sharex=True)
-
-    t = np.arange(n_test)
-
-    ax1.plot(t, true_kw, "#333", lw=1.8, label="Actual power", zorder=4)
-    ax1.plot(t, pred_kw_full, "#E65100", lw=1.3,
-             label=f"Full (27 features, MAE={m_power['MAE']:.4f})", alpha=0.85, zorder=3)
-    ax1.plot(t, pred_kw_gpu, "#1565C0", lw=1.3,
-             label=f"History only (10 features, MAE={gpu_power['MAE']:.4f})", alpha=0.85, zorder=2)
-    ax1.plot(t, persist_kw, "#888", lw=1.0, ls="--",
-             label=f"Persistence (MAE={p_power['MAE']:.4f})", alpha=0.5, zorder=1)
-    ax1.set_ylabel("Estimated Power (kW)")
-    ax1.set_title(
-        f"Ablation: Does Exogenous Workload Telemetry Improve Power Prediction? (70/15/15, w={WINDOW})\n"
-        "Both models share identical GPU utilization features — the full model additionally uses QPS, pod ratios, memory, time-of-day")
-    ax1.legend(loc="upper right", framealpha=0.9, fontsize=8)
-
-    rw = 10
-    err_full = pd.Series(np.abs(pred_kw_full - true_kw)).rolling(rw, min_periods=1).mean()
-    err_gpu = pd.Series(np.abs(pred_kw_gpu - true_kw)).rolling(rw, min_periods=1).mean()
-    err_persist = pd.Series(np.abs(persist_kw - true_kw)).rolling(rw, min_periods=1).mean()
-
-    ax2.plot(t, err_full, "#E65100", lw=1.5, label=f"Full ({rw}-min rolling MAE)")
-    ax2.plot(t, err_gpu, "#1565C0", lw=1.3, label=f"History only ({rw}-min rolling MAE)")
-    ax2.plot(t, err_persist, "#888", lw=1.2, ls="--", label=f"Persistence ({rw}-min rolling MAE)")
-    ax2.set_ylabel("Rolling MAE (kW)")
-    ax2.set_xlabel("Time (minutes into test set)")
-    ax2.set_title(f"Per-Sample Error Comparison (Rolling {rw}-min Window)")
-    ax2.legend(loc="upper right", framealpha=0.9, fontsize=8)
-
-    fig.tight_layout()
-    fig.savefig(R / "fig_onestep_ablation.png", bbox_inches="tight")
-    plt.close(fig)
-    print(f"  → fig_onestep_ablation.png")
+    return gpu_power, pred_kw_full, pred_kw_gpu, true_kw, persist_kw
 
 
 def load_and_prepare():
@@ -334,30 +281,83 @@ def fig_power_overlay(data, feat, n_gpus, model):
 # 2. POWER DOMAIN TABLE
 # =====================================================================
 
-def write_power_table(m_model, m_persist):
-    print("[2/2] Power domain metrics table...")
+def write_power_table(m_model, m_persist, gpu_power):
+    print("[2/2] Power domain and ablation table...")
+    
+    # Calculate improvements
     dm_mae = (m_persist["MAE"] - m_model["MAE"]) / m_persist["MAE"] * 100
     dm_rmse = (m_persist["RMSE"] - m_model["RMSE"]) / m_persist["RMSE"] * 100
     dm_r2 = m_model["R2"] - m_persist["R2"]
     dm_mape = (m_persist["MAPE"] - m_model["MAPE"]) / m_persist["MAPE"] * 100
+    
+    gpu_imp_mae = (m_persist["MAE"] - gpu_power["MAE"]) / m_persist["MAE"] * 100
+    gpu_imp_r2 = gpu_power["R2"] - m_persist["R2"]
 
     lines = [
-        "## Power Domain Results (70/15/15, w=60, Transformer)\n",
-        "Power estimated via Fan et al. (2007): P = n_gpus × (50 + 250 × gpu_util × active_pod_ratio) / 1000",
-        "Active pod ratio held at last known value. No future information used.\n",
-        "| Method | MAE (kW) | RMSE (kW) | R² | MAPE (%) |",
-        "| --- | ---: | ---: | ---: | ---: |",
-        f"| **Transformer** | **{m_model['MAE']:.4f}** | **{m_model['RMSE']:.4f}** | "
-        f"**{m_model['R2']:.4f}** | **{m_model['MAPE']:.2f}** |",
-        f"| Persistence | {m_persist['MAE']:.4f} | {m_persist['RMSE']:.4f} | "
-        f"{m_persist['R2']:.4f} | {m_persist['MAPE']:.2f} |",
-        f"| Δ | {dm_mae:+.1f}% | {dm_rmse:+.1f}% | {dm_r2:+.4f} | {dm_mape:+.1f}% |",
+        "# Power Domain and Ablation Results (70/15/15, w=60, Transformer)\n",
+        "Power estimated via Fan et al. (2007): P = n_gpus × (50 + 250 × gpu_util) / 1000",
+        "The idle term is charged to every powered GPU; active-pod ratio is not used in the power conversion.\n",
+        f"**Configuration**: 70/15/15 split, w={WINDOW}, seed={SEED}",
+        "**Full model**: 27 features (GPU utilization and derived statistics + exogenous workload telemetry)",
+        "**History-only model**: 10 features (GPU utilization, lags, rolling means/stds, rate of change, fractional differencing — no QPS, pod ratios, memory, or time-of-day)",
+        "**Persistence**: predict current value for all future steps\n",
+        "| Method | Feature Set | Features | MAE (kW) | RMSE (kW) | R² | MAPE (%) | vs Persistence MAE | vs Persistence R² |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        f"| **Transformer (full)** | GPU history + workload telemetry | 27 | **{m_model['MAE']:.4f}** | **{m_model['RMSE']:.4f}** | "
+        f"**{m_model['R2']:.4f}** | **{m_model['MAPE']:.2f}** | **{dm_mae:+.1f}%** | **{dm_r2:+.4f}** |",
+        f"| Transformer (history only) | GPU history only | 10 | {gpu_power['MAE']:.4f} | {gpu_power['RMSE']:.4f} | "
+        f"{gpu_power['R2']:.4f} | {gpu_power['MAPE']:.2f} | {gpu_imp_mae:+.1f}% | {gpu_imp_r2:+.4f} |",
+        f"| Persistence | Repeat last value | — | {m_persist['MAE']:.4f} | {m_persist['RMSE']:.4f} | "
+        f"{m_persist['R2']:.4f} | {m_persist['MAPE']:.2f} | — | — |",
         "",
     ]
     (R / "power_table.md").write_text("\n".join(lines))
     print("  → power_table.md")
     print()
     print("  " + "\n  ".join(lines))
+
+
+def fig_ablation(pred_kw_full, pred_kw_gpu, true_kw, persist_kw, m_power, gpu_power, p_power):
+    """Generate ablation figure: time-series overlay."""
+    print("[3/3] Ablation figure...")
+    import pandas as pd
+    
+    n_test = len(true_kw)
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8),
+                                    gridspec_kw={"height_ratios": [3, 1]}, sharex=True)
+
+    t = np.arange(n_test)
+
+    ax1.plot(t, true_kw, "#333", lw=1.8, label="Actual power", zorder=4)
+    ax1.plot(t, pred_kw_full, "#E65100", lw=1.3,
+             label=f"Full (27 features, MAE={m_power['MAE']:.4f})", alpha=0.85, zorder=3)
+    ax1.plot(t, pred_kw_gpu, "#1565C0", lw=1.3,
+             label=f"History only (10 features, MAE={gpu_power['MAE']:.4f})", alpha=0.85, zorder=2)
+    ax1.plot(t, persist_kw, "#888", lw=1.0, ls="--",
+             label=f"Persistence (MAE={p_power['MAE']:.4f})", alpha=0.5, zorder=1)
+    ax1.set_ylabel("Estimated Power (kW)")
+    ax1.set_title(
+        f"Ablation: Does Exogenous Workload Telemetry Improve Power Prediction? (70/15/15, w={WINDOW})\n"
+        "Both models share identical GPU utilization features — the full model additionally uses QPS, pod ratios, memory, time-of-day")
+    ax1.legend(loc="upper right", framealpha=0.9, fontsize=8)
+
+    rw = 10
+    err_full = pd.Series(np.abs(pred_kw_full - true_kw)).rolling(rw, min_periods=1).mean()
+    err_gpu = pd.Series(np.abs(pred_kw_gpu - true_kw)).rolling(rw, min_periods=1).mean()
+    err_persist = pd.Series(np.abs(persist_kw - true_kw)).rolling(rw, min_periods=1).mean()
+
+    ax2.plot(t, err_full, "#E65100", lw=1.5, label=f"Full ({rw}-min rolling MAE)")
+    ax2.plot(t, err_gpu, "#1565C0", lw=1.3, label=f"History only ({rw}-min rolling MAE)")
+    ax2.plot(t, err_persist, "#888", lw=1.2, ls="--", label=f"Persistence ({rw}-min rolling MAE)")
+    ax2.set_ylabel("Rolling MAE (kW)")
+    ax2.set_xlabel("Time (minutes into test set)")
+    ax2.set_title(f"Per-Sample Error Comparison (Rolling {rw}-min Window)")
+    ax2.legend(loc="upper right", framealpha=0.9, fontsize=8)
+
+    fig.tight_layout()
+    fig.savefig(R / "fig_onestep_ablation.png", bbox_inches="tight")
+    plt.close(fig)
+    print(f"  → fig_onestep_ablation.png")
 
 
 if __name__ == "__main__":

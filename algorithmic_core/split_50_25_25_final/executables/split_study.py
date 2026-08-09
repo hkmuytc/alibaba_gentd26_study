@@ -22,8 +22,10 @@ R = Path(__file__).resolve().parent.parent / "results"
 SEED = 0
 
 plt.rcParams.update({
-    "figure.dpi": 200, "font.size": 10, "font.family": "serif",
-    "axes.titlesize": 12, "axes.labelsize": 11, "legend.fontsize": 9,
+    "figure.dpi": 200, "font.size": 14, "font.family": "serif",
+    "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
+    "axes.titlesize": 16, "axes.labelsize": 15, "legend.fontsize": 13,
+    "xtick.labelsize": 12, "ytick.labelsize": 12,
     "figure.facecolor": "white", "axes.facecolor": "#fafafa",
     "axes.grid": True, "grid.alpha": 0.25,
     "axes.spines.top": False, "axes.spines.right": False,
@@ -41,8 +43,8 @@ def main():
     results = run_all()
 
     print("\n[Figures]")
-    fig_mae_by_split(results);          print("  fig_split_study_mae.png")
-    fig_r2_by_split(results);           print("  fig_split_study_r2.png")
+    fig_mae_by_split(results);          print("  fig_onestep_split_mae.png")
+    fig_r2_by_split(results);           print("  fig_onestep_split_r2.png")
 
     print("\n[Tables]")
     generate_tables(results);            print("  split_study_tables.md")
@@ -99,8 +101,9 @@ def run_all():
     gpu, gmem, qps = load_raw_signals()
     agg = aggregate_to_cluster(gpu, gmem, qps)
     feat = engineer_features(agg)
-    feat["power_kw"] = estimate_power_kw(feat["gpu_util"].values, feat["active_pod_ratio"].values,
-                                          int(agg["gpu_n_pods"].median()))  # for feature df only
+    feat["power_kw"] = estimate_power_kw(
+        feat["gpu_util"].values, feat["active_pod_ratio"].values,
+        int(agg["gpu_n_pods"].median()))  # for feature df only
     model_df = feat.drop(columns=["power_kw"])
 
     results = {}
@@ -110,7 +113,8 @@ def run_all():
     for train_r, val_r in SPLITS:
         label = f"{int(train_r*100)}/{int(val_r*100)}/{int((1-train_r-val_r)*100)}"
         cache_label = f"{int(train_r*100)}-{int(val_r*100)}-{int((1-train_r-val_r)*100)}"
-        n_gpus = int(agg.iloc[:int(len(agg) * train_r)]["gpu_n_pods"].median())
+        train_idx = feat.index[:int(len(feat) * train_r)]
+        n_gpus = int(agg.loc[train_idx, "gpu_n_pods"].median())
         results[label] = {}
 
         for window in WINDOWS:
@@ -136,7 +140,7 @@ def run_all():
 
                 if cached is not None:
                     model, _, cached_metrics = cached
-                    m_model = cached_metrics
+                    m_model, _ = evaluate_power(model, data, feat, n_gpus, window, train_r, val_r)
                     n_loaded += 1
                     src = "cached"
                 else:
@@ -149,6 +153,10 @@ def run_all():
                     cache.save(cache_name, model, scalers, m_model)
                     n_trained += 1
                     src = "trained"
+
+                if cached is not None:
+                    scalers = {"feat_scaler": data["feat_scaler"], "tgt_scaler": data["tgt_scaler"]}
+                    cache.save(cache_name, model, scalers, m_model)
 
                 m_persist = evaluate_power(model, data, feat, n_gpus, window, train_r, val_r)[1]
 
@@ -169,7 +177,7 @@ def run_all():
 # =====================================================================
 
 def fig_mae_by_split(results):
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5), sharey=True)
+    fig, axes = plt.subplots(1, 3, figsize=(17, 6), sharey=True)
 
     for si, split_label in enumerate(SPLIT_LABELS):
         ax = axes[si]
@@ -194,24 +202,24 @@ def fig_mae_by_split(results):
                         [results[split_label][WINDOWS[j]]["models"][m]["MAE"] for m in MODELS]
                 if v == min(all_v):
                     ax.plot(x[j] + mi * width, v + 0.0005, "*", color=color,
-                            markersize=10, markeredgewidth=0.5, markeredgecolor="black")
+                        markersize=8, markeredgewidth=0.5, markeredgecolor="black")
 
-        ax.set_title(f"Split: {split_label}", fontsize=12)
+        ax.set_title(split_label)
         ax.set_xticks(x + width * 2.5)
         ax.set_xticklabels([f"w={w}" for w in WINDOWS])
         ax.set_ylim(bottom=0)
         if si == 0:
             ax.set_ylabel("MAE (kW)")
-            ax.legend(loc="upper right", fontsize=7, ncol=2, framealpha=0.9)
+            ax.legend(loc="upper right", ncol=2, framealpha=0.9)
 
-    fig.suptitle("One-Step Power Prediction MAE (kW) by Model, Window, and Split", fontsize=13, y=1.02)
+    fig.suptitle("One-Step Power MAE by Model, Window, and Split", fontsize=16, y=1.02)
     fig.tight_layout()
     fig.savefig(R / "fig_onestep_split_mae.png", bbox_inches="tight")
     plt.close(fig)
 
 
 def fig_r2_by_split(results):
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5), sharey=True)
+    fig, axes = plt.subplots(1, 3, figsize=(17, 6), sharey=True)
 
     for si, split_label in enumerate(SPLIT_LABELS):
         ax = axes[si]
@@ -236,9 +244,9 @@ def fig_r2_by_split(results):
                         [results[split_label][WINDOWS[j]]["models"][m]["R2"] for m in MODELS]
                 if v == max(all_v):
                     ax.plot(x[j] + mi * width, v + 0.005, "*", color=color,
-                            markersize=10, markeredgewidth=0.5, markeredgecolor="black")
+                        markersize=8, markeredgewidth=0.5, markeredgecolor="black")
 
-        ax.set_title(f"Split: {split_label}", fontsize=12)
+        ax.set_title(split_label)
         ax.set_xticks(x + width * 2.5)
         ax.set_xticklabels([f"w={w}" for w in WINDOWS])
         # Dynamic y-axis: find min R² across all methods and windows for this split
@@ -251,9 +259,9 @@ def fig_r2_by_split(results):
         ax.set_ylim(y_min, 1.0)
         if si == 0:
             ax.set_ylabel("$R^2$ (Power, kW)")
-            ax.legend(loc="lower right", fontsize=7, ncol=2, framealpha=0.9)
+            ax.legend(loc="lower right", ncol=2, framealpha=0.9)
 
-    fig.suptitle("One-Step Power Prediction $R^2$ by Model, Window, and Split", fontsize=13, y=1.02)
+    fig.suptitle("One-Step Power $R^2$ by Model, Window, and Split", fontsize=16, y=1.02)
     fig.tight_layout()
     fig.savefig(R / "fig_onestep_split_r2.png", bbox_inches="tight")
     plt.close(fig)
@@ -267,18 +275,18 @@ def fig_r2_by_split(results):
 
 def generate_tables(results):
     lines = []
-    lines.append("## Split Strategy Comparison — Power Domain (kW)\n")
+    lines.append("# Split Strategy Comparison — Power Domain (kW)\n")
     lines.append("All metrics computed in the power domain via Fan et al. (2007) linear model.\n")
 
     for sl in SPLIT_LABELS:
         n_tr = results[sl][WINDOWS[0]]["n_train"]
         n_va = results[sl][WINDOWS[0]]["n_val"]
         n_te = results[sl][WINDOWS[0]]["n_test"]
-        lines.append(f"### Split {sl} (train={n_tr}, val={n_va}, test={n_te})\n")
+        lines.append(f"## Split {sl} (train={n_tr}, val={n_va}, test={n_te})\n")
 
         for metric, unit in [("MAE", " (kW)"), ("R2", "")]:
             mkey = "R2" if metric == "R2" else metric
-            lines.append(f"#### {metric}{unit}\n")
+            lines.append(f"### {sl} {metric}{unit}\n")
             lines.append("| Method | w=15 | w=30 | w=60 |")
             lines.append("| --- | ---: | ---: | ---: |")
 

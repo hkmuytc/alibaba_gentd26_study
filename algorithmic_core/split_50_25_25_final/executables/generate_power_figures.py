@@ -9,8 +9,26 @@ from pathlib import Path
 
 R = Path(__file__).resolve().parent.parent / "results"
 
+plt.rcParams.update({
+    "figure.dpi": 200,
+    "savefig.dpi": 300,
+    "font.size": 14,
+    "font.family": "serif",
+    "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
+    "axes.titlesize": 16,
+    "axes.labelsize": 15,
+    "legend.fontsize": 13,
+    "xtick.labelsize": 12,
+    "ytick.labelsize": 12,
+})
+
 with open(R / "averaged_results.json", "r") as f:
     results = json.load(f)
+
+required_splits = ["50/25/25", "60/20/20", "70/15/15"]
+missing = [split for split in required_splits if split not in results]
+if missing:
+    raise KeyError(f"averaged_results.json is missing split(s): {', '.join(missing)}")
 
 horizons = []
 for h_str in sorted(results["70/15/15"].keys(), key=int):
@@ -19,7 +37,7 @@ horizons = np.array(horizons)
 
 plt.figure(figsize=(14, 6))
 
-splits = ["50/25/25", "60/20/20", "70/15/15"]
+splits = required_splits
 colors_split = ['#1565C0', '#2E7D32', '#E65100']
 
 for split_key, color in zip(splits, colors_split):
@@ -37,11 +55,10 @@ for split_key, color in zip(splits, colors_split):
             color=color, linewidth=2, markersize=6, alpha=0.8)
 
 plt.axhline(y=0, color='black', linewidth=1.5, linestyle='-')
-plt.xlabel('Forecast Horizon (minutes)', fontsize=12, fontweight='bold')
-plt.ylabel('Power MAE Improvement (%)', fontsize=12, fontweight='bold')
-plt.title('Multi-Step Power Prediction: Model Improvement Over Persistence Across Splits',
-         fontsize=14, fontweight='bold', pad=20)
-plt.legend(fontsize=11, loc='best')
+plt.xlabel('Forecast Horizon (minutes)')
+plt.ylabel('Power MAE Improvement (%)')
+plt.title('Multi-Step Power Improvement Across Splits', pad=12)
+plt.legend(loc='best')
 plt.grid(True, alpha=0.3, linestyle='--')
 plt.xticks(horizons)
 plt.tight_layout()
