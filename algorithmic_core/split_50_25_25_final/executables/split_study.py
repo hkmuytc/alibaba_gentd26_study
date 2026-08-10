@@ -345,7 +345,7 @@ def generate_tables(results):
                      f"{'+' if dr > 0 else ''}{dr:.3f} |")
     lines.append("")
 
-    (R / "split_study_tables.md").write_text("\n".join(lines))
+    (R / "split_study_tables.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 if __name__ == "__main__":

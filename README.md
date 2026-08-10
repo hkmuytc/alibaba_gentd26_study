@@ -10,43 +10,58 @@ The research shows that a Transformer model can forecast next-minute GPU utiliza
 
 ---
 
+## Windows Python Note
+
+On Windows, the command to run Python depends on how it was installed:
+
+- **Python 3.11 and earlier** (installed from python.org): use `python`
+- **Python 3.12 and later** (installed from the Microsoft Store): use `py`
+
+If `python --version` works in your terminal, use `python`. If it does not, use `py` instead.
+
+---
+
 ## Quick Start — From Fresh Clone to Full Results
 
 Follow these steps in order. Each section builds on the previous one.
 
 ### Step 1: Clone the Repository
 
+**macOS / Linux:**
+
 ```bash
 git clone https://github.com/hkmuytc/alibaba_gentd26_study.git
 cd alibaba_gentd26_study
 ```
 
-### Step 2: Create a Virtual Environment and Install Dependencies
+**Windows (PowerShell):**
+
+```powershell
+git clone https://github.com/hkmuytc/alibaba_gentd26_study.git
+cd alibaba_gentd26_study
+```
+
+### Step 2: Install Dependencies
 
 Requires **Python 3.9 or later**.
 
 **macOS / Linux:**
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+pip3 install -r requirements.txt
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-py -m venv .venv
-.venv\Scripts\Activate.ps1
-py -m pip install --upgrade pip
-py -m pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-> If PowerShell blocks the activation script, run this once in the same terminal and retry:
-> ```powershell
-> Set-ExecutionPolicy -Scope Process Bypass
-> ```
+Or if using Python 3.12+:
+
+```powershell
+py -m pip install -r requirements.txt
+```
 
 ### Step 3: Download the Raw Data
 
@@ -110,7 +125,7 @@ python3 algorithmic_core/split_50_25_25_final/executables/generate_power_figures
 python3 algorithmic_core/split_50_25_25_final/executables/locality_analysis.py
 ```
 
-**Windows (PowerShell):**
+**Windows (PowerShell, Python 3.11 and earlier):**
 
 ```powershell
 python algorithmic_core\split_50_25_25_final\executables\split_study.py
@@ -118,6 +133,16 @@ python algorithmic_core\split_50_25_25_final\executables\generate_main_results.p
 python algorithmic_core\split_50_25_25_final\executables\multistep_averaged.py
 python algorithmic_core\split_50_25_25_final\executables\generate_power_figures.py
 python algorithmic_core\split_50_25_25_final\executables\locality_analysis.py
+```
+
+**Windows (PowerShell, Python 3.12+):**
+
+```powershell
+py algorithmic_core\split_50_25_25_final\executables\split_study.py
+py algorithmic_core\split_50_25_25_final\executables\generate_main_results.py
+py algorithmic_core\split_50_25_25_final\executables\multistep_averaged.py
+py algorithmic_core\split_50_25_25_final\executables\generate_power_figures.py
+py algorithmic_core\split_50_25_25_final\executables\locality_analysis.py
 ```
 
 ### What Each Script Produces
@@ -170,12 +195,20 @@ python3 03_evaluate_power.py
 python3 04_visualize_results.py
 ```
 
-**Windows (PowerShell):**
+**Windows (PowerShell, Python 3.11 and earlier):**
 
 ```powershell
 cd ecs-realtime
 python 03_evaluate_power.py
 python 04_visualize_results.py
+```
+
+**Windows (PowerShell, Python 3.12+):**
+
+```powershell
+cd ecs-realtime
+py 03_evaluate_power.py
+py 04_visualize_results.py
 ```
 
 - `03_evaluate_power.py` — Processes the physical telemetry through the same pipeline used during training, loads the Transformer from `algorithmic_core/split_50_25_25_final/`, and prints a **Power Gap analysis** comparing predicted vs actual power.
@@ -185,12 +218,20 @@ Optionally, calibrate an improved power model:
 
 **macOS / Linux:**
 ```bash
+cd ecs-realtime
 python3 find_transform.py
 ```
 
-**Windows (PowerShell):**
+**Windows (PowerShell, Python 3.11 and earlier):**
 ```powershell
+cd ecs-realtime
 python find_transform.py
+```
+
+**Windows (PowerShell, Python 3.12+):**
+```powershell
+cd ecs-realtime
+py find_transform.py
 ```
 
 This finds that the standard Fan model (50W idle + 250W range) has ~80W MAE, while an optimal affine fit (115W idle + 268W range) achieves ~11W MAE — an 87% improvement.
@@ -251,7 +292,7 @@ python3 algorithmic_core/split_70_15_15/executables/generate_power_figures.py
 python3 algorithmic_core/split_70_15_15/executables/locality_analysis.py
 ```
 
-**Windows (PowerShell):**
+**Windows (PowerShell, Python 3.11 and earlier):**
 
 ```powershell
 python algorithmic_core\split_70_15_15\executables\split_study.py
@@ -259,6 +300,16 @@ python algorithmic_core\split_70_15_15\executables\generate_main_results.py
 python algorithmic_core\split_70_15_15\executables\multistep_averaged.py
 python algorithmic_core\split_70_15_15\executables\generate_power_figures.py
 python algorithmic_core\split_70_15_15\executables\locality_analysis.py
+```
+
+**Windows (PowerShell, Python 3.12+):**
+
+```powershell
+py algorithmic_core\split_70_15_15\executables\split_study.py
+py algorithmic_core\split_70_15_15\executables\generate_main_results.py
+py algorithmic_core\split_70_15_15\executables\multistep_averaged.py
+py algorithmic_core\split_70_15_15\executables\generate_power_figures.py
+py algorithmic_core\split_70_15_15\executables\locality_analysis.py
 ```
 
 ---

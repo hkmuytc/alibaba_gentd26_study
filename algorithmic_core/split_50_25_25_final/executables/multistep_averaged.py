@@ -147,7 +147,7 @@ def _write_multistep_table(all_results):
     lines.append("")
     lines.append(f"## Model wins: {wins_total}/{len(split)} horizons (power MAE)")
 
-    (R / "multistep_power_table.md").write_text("\n".join(lines) + "\n")
+    (R / "multistep_power_table.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"\n  → multistep_power_table.md")
 
 
@@ -280,7 +280,7 @@ def run_all():
     print(f"\n  Cache: {n_loaded} loaded, {n_trained} trained ({n_loaded + n_trained} total)")
 
     # Save JSON
-    with open(R / "averaged_results.json", "w") as f:
+    with open(R / "averaged_results.json", "w", encoding="utf-8") as f:
         json.dump(all_results, f, indent=2)
 
     # Generate markdown table

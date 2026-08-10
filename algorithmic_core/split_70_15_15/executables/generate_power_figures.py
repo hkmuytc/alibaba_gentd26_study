@@ -9,7 +9,7 @@ from pathlib import Path
 
 R = Path(__file__).resolve().parent.parent / "results"
 
-with open(R / "averaged_results.json", "r") as f:
+with open(R / "averaged_results.json", "r", encoding="utf-8") as f:
     results = json.load(f)
 
 horizons = []

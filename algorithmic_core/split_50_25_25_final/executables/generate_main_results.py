@@ -359,7 +359,7 @@ def write_power_table(m_model, m_persist, history_power):
         f"{r2_delta(history_power):+.4f} | {mape_improvement(history_power):+.1f}% |",
         "",
     ]
-    (R / "power_table.md").write_text("\n".join(lines))
+    (R / "power_table.md").write_text("\n".join(lines), encoding="utf-8")
     print("  → power_table.md")
     print()
     print("  " + "\n  ".join(lines))

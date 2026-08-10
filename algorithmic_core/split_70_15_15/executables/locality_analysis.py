@@ -598,7 +598,7 @@ def _write_locality_table(results, y_all, gpu_vol, regimes):
     lines.append(f"| Model wins | {np.sum(advantage > 0)}/{len(advantage)} ({np.mean(advantage > 0)*100:.0f}%) |")
     lines.append(f"| Mean advantage | {np.mean(advantage):+.4f} kW |")
 
-    (R / "locality_table.md").write_text("\n".join(lines) + "\n")
+    (R / "locality_table.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"\n  → locality_table.md")
 
 

@@ -22,7 +22,7 @@ class ModelCache:
     def _load_meta(self):
         p = self._meta_path()
         if p.exists():
-            with open(p) as f:
+            with open(p, encoding="utf-8") as f:
                 return json.load(f)
         return {}
 
@@ -39,9 +39,9 @@ class ModelCache:
             elif isinstance(obj, list):
                 return [convert(v) for v in obj]
             return obj
-        
+
         meta_converted = convert(meta)
-        with open(self._meta_path(), "w") as f:
+        with open(self._meta_path(), "w", encoding="utf-8") as f:
             json.dump(meta_converted, f, indent=2)
 
     def save(self, name, model, scalers, metrics):

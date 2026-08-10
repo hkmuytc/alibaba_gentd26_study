@@ -22,7 +22,7 @@ plt.rcParams.update({
     "ytick.labelsize": 12,
 })
 
-with open(R / "averaged_results.json", "r") as f:
+with open(R / "averaged_results.json", "r", encoding="utf-8") as f:
     results = json.load(f)
 
 required_splits = ["50/25/25", "60/20/20", "70/15/15"]

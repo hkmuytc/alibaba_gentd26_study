@@ -84,7 +84,7 @@ python3 executables/generate_power_figures.py
 python3 executables/locality_analysis.py
 ```
 
-**Windows (PowerShell):**
+**Windows (PowerShell, Python 3.11 and earlier):**
 
 ```powershell
 cd algorithmic_core\split_50_25_25_final
@@ -94,6 +94,18 @@ python executables\generate_main_results.py
 python executables\multistep_averaged.py
 python executables\generate_power_figures.py
 python executables\locality_analysis.py
+```
+
+**Windows (PowerShell, Python 3.12+):**
+
+```powershell
+cd algorithmic_core\split_50_25_25_final
+
+py executables\split_study.py
+py executables\generate_main_results.py
+py executables\multistep_averaged.py
+py executables\generate_power_figures.py
+py executables\locality_analysis.py
 ```
 
 On the first run, all models are trained from scratch (this takes time). On subsequent runs, models are loaded from the `models/` cache and only figures and tables are regenerated — much faster.

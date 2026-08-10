@@ -54,15 +54,16 @@ Before running the evaluation scripts, make sure you have:
 
    **macOS / Linux:**
    ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
+   pip3 install -r requirements.txt
+   ```
+
+   **Windows (PowerShell, Python 3.11 and earlier):**
+   ```powershell
    python -m pip install -r requirements.txt
    ```
 
-   **Windows (PowerShell):**
+   **Windows (PowerShell, Python 3.12+):**
    ```powershell
-   py -m venv .venv
-   .venv\Scripts\Activate.ps1
    py -m pip install -r requirements.txt
    ```
 
@@ -93,10 +94,16 @@ cd ecs-realtime
 python3 03_evaluate_power.py
 ```
 
-**Windows (PowerShell):**
+**Windows (PowerShell, Python 3.11 and earlier):**
 ```powershell
 cd ecs-realtime
 python 03_evaluate_power.py
+```
+
+**Windows (PowerShell, Python 3.12+):**
+```powershell
+cd ecs-realtime
+py 03_evaluate_power.py
 ```
 
 **What it does:**
@@ -126,9 +133,14 @@ Run the visualization script. It produces a three-panel figure suitable for incl
 python3 04_visualize_results.py
 ```
 
-**Windows (PowerShell):**
+**Windows (PowerShell, Python 3.11 and earlier):**
 ```powershell
 python 04_visualize_results.py
+```
+
+**Windows (PowerShell, Python 3.12+):**
+```powershell
+py 04_visualize_results.py
 ```
 
 **Output:** `ecs-realtime/fig_full_paper_validation.png` (300 DPI, Times New Roman)
@@ -152,9 +164,14 @@ The `find_transform.py` script fits an optimal affine transform between utilizat
 python3 find_transform.py
 ```
 
-**Windows (PowerShell):**
+**Windows (PowerShell, Python 3.11 and earlier):**
 ```powershell
 python find_transform.py
+```
+
+**Windows (PowerShell, Python 3.12+):**
+```powershell
+py find_transform.py
 ```
 
 **Expected finding:** The standard Fan model (base=50W, range=250W) has an MAE of ~80W. The optimal affine fit (base≈115W, range≈268W) achieves an MAE of ~11W — an 87% error reduction. The elevated base power is explained by VRAM retention, PCIe bus energization, and thermal saturation that persist even when GPU compute utilization drops to zero.

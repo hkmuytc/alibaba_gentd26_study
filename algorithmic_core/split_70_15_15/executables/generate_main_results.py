@@ -311,7 +311,7 @@ def write_power_table(m_model, m_persist, gpu_power):
         f"{m_persist['R2']:.4f} | {m_persist['MAPE']:.2f} | — | — |",
         "",
     ]
-    (R / "power_table.md").write_text("\n".join(lines))
+    (R / "power_table.md").write_text("\n".join(lines), encoding="utf-8")
     print("  → power_table.md")
     print()
     print("  " + "\n  ".join(lines))
