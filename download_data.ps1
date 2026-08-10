@@ -7,7 +7,7 @@
 $ErrorActionPreference = "Stop"
 
 $baseUrl = "https://github.com/alibaba/clusterdata/raw/master/cluster-trace-v2026-GenAI"
-$rawDir  = Join-Path $PSScriptRoot "data" "raw"
+$rawDir = [IO.Path]::Combine($PSScriptRoot, "data", "raw")
 
 if (-not (Test-Path $rawDir)) {
     New-Item -ItemType Directory -Path $rawDir -Force | Out-Null

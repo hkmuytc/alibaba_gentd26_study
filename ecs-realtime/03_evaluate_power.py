@@ -97,8 +97,6 @@ def evaluate(features_df, actual_power):
         feat_scaler = scalers['feat_scaler']
         tgt_scaler = scalers['tgt_scaler']
         
-        # Scale all features (Note, your original code trains the scaler on just the columns 
-        # that existed in pipeline.py, so we must strictly ensure no extra columns sneaked in)
         feature_cols = ['gpu_util', 'gpu_util_lag1', 'gpu_util_lag2', 'gpu_util_rmean5', 
                         'gpu_util_rmean15', 'gpu_util_rstd15', 'gpu_util_rmean30', 
                         'gpu_util_rstd30', 'gpu_util_roc', 'gpu_util_fd03', 
