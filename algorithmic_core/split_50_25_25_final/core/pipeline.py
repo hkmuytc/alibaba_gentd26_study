@@ -119,11 +119,6 @@ def engineer_features(df):
 def estimate_power_kw(gpu_util_frac, active_pod_ratio_or_n_gpus, n_gpus=None):
     """
     Strict GPU-only power estimation (Fan et al. 2007).
-    Memory power is a near-constant ~2.7 kW offset (std < 0.04 kW) and is omitted.
-
-    Active-pod ratio may be passed by older call sites, but is intentionally ignored:
-    cluster-mean GPU utilization already includes idle pods in the dynamic term, while
-    the idle term belongs to every powered GPU.
     """
     if n_gpus is None:
         n_gpus = active_pod_ratio_or_n_gpus

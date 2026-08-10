@@ -74,6 +74,11 @@ Before running the evaluation scripts, make sure you have:
    bash download_data.sh
    ```
 
+   **Windows (PowerShell):**
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File download_data.ps1
+   ```
+
    **Windows (Git Bash or WSL):**
    ```bash
    bash download_data.sh

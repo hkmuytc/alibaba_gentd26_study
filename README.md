@@ -73,11 +73,24 @@ The `data/` folder is git-ignored, so a fresh clone does not include the raw CSV
 bash download_data.sh
 ```
 
+**Windows (PowerShell):**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File download_data.ps1
+```
+
 **Windows (Git Bash or WSL):**
 
 ```bash
 bash download_data.sh
 ```
+
+Or use sh
+
+```sh
+sh download_data.sh
+```
+
 
 **Windows (manual):** Download and extract the five `.tar.gz` files from [Alibaba's GenTD26 trace release](https://github.com/alibaba/clusterdata/tree/master/cluster-trace-v2026-GenAI) into `data/raw/`. The files are:
 
@@ -252,10 +265,14 @@ The interactive dashboard lets you explore the data, step through model predicti
 streamlit run app.py
 ```
 
-**Windows (PowerShell):**
-
+**Windows (PowerShell, Python 3.11 and earlier):**
 ```powershell
-streamlit run app.py
+python -m streamlit run app.py
+```
+
+**Windows (PowerShell, Python 3.12+):**
+```powershell
+py -m streamlit run app.py
 ```
 
 Then open [http://localhost:8501](http://localhost:8501) in your browser.
